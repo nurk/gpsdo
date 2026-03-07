@@ -69,7 +69,7 @@ private:
                                unsigned long lastOverflow,
                                bool isRun,
                                uint16_t warmupTime);
-    void ppsLockDetection();
+    void ppsLockDetection(uint16_t warmupTime);
     void determineFilterConstAndRescale(bool isRun);
     void lowPassTicFilter();
     void piLoop(bool isRun, uint16_t warmupTime);

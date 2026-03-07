@@ -52,7 +52,7 @@ void CalculationController::calculate(const unsigned int localTimerCounter,
     preloadHeuristic(warmupTime);
     ticLinearization(localTicValue);
     updateTimersAndResets(localTimerCounter, lastOverflow, isRun, warmupTime);
-    ppsLockDetection();
+    ppsLockDetection(warmupTime);
     determineFilterConstAndRescale(isRun);
     lowPassTicFilter();
     piLoop(isRun, warmupTime);
@@ -191,12 +191,21 @@ void CalculationController::updateTimersAndResets(const unsigned int localTimerC
     }
 }
 
-void CalculationController::ppsLockDetection() {
-    // Always update the IIR averages so they track the signal even during warmup.
+void CalculationController::ppsLockDetection(const uint16_t warmupTime) {
+    // Always update the IIR averages so they are ready when disciplining starts,
+    // but suppress lock counting entirely during warmup — the OCXO is not yet
+    // disciplined so lock has no meaning and the lock LED must not come on.
     state_.ticValueFilteredForPpsLock = state_.ticValueFilteredForPpsLock + (state_.ticValue * PPS_LOCK_LP_FACTOR -
         state_.ticValueFilteredForPpsLock) / PPS_LOCK_LP_FACTOR;
     state_.diffNsForPpsLock = state_.diffNsForPpsLock + (state_.diffNs * PPS_LOCK_LP_FACTOR - state_.diffNsForPpsLock) /
         PPS_LOCK_LP_FACTOR;
+
+    if (state_.time <= warmupTime) {
+        // Still in warmup — keep counter and locked flag cleared.
+        state_.lockPpsCounter = 0;
+        state_.ppsLocked = false;
+        return;
+    }
 
     state_.lockPpsCounter = state_.lockPpsCounter + 1;
 
