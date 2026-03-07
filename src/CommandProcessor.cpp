@@ -218,6 +218,7 @@ void CommandProcessor::process() const {
             case x:
             case X: // reset short term accumulators and timers (for testing)
                 controller_.resetShortTermAccumulators();
+                Serial2.println(F("Resetting shortterm accumulators"));
             default:
                 serial_.println(F("No valid command"));
                 break;
