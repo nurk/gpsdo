@@ -40,6 +40,7 @@ void CommandProcessor::printHelp() const {
     serial_.println(F("  r<value> : set temperature reference in Celsius (float)"));
     serial_.println(F("u or U<value> : set time constant in seconds (4 to 32000)"));
     serial_.println(F("w or W<seconds> : set warmup time in seconds (1 to 1000)"));
+    serial_.println(F("x or X : reset short term accumulators and timers (for testing)"));
 }
 
 void CommandProcessor::setWarmupTime(const uint16_t value) const {
@@ -56,7 +57,7 @@ void CommandProcessor::setWarmupTime(const uint16_t value) const {
 }
 
 void CommandProcessor::setDac(const uint16_t value) const {
-    if (value < 0 || value > 65535) {
+    if (value > 65535) {
         serial_.println(F("Not a valid DAC value - Must be between 0 and 65535"));
         return;
     }
@@ -90,6 +91,8 @@ void CommandProcessor::process() const {
         U = 'U', // set time const
         w = 'w',
         W = 'W', // override warmup time
+        x = 'x',
+        X = 'X' // reset short term accumulators and timers (for testing)
     };
 
     if (serial_.available() > 0) {
@@ -212,6 +215,9 @@ void CommandProcessor::process() const {
                 value = serial_.parseInt();
                 setWarmupTime(value);
                 break;
+            case x:
+            case X: // reset short term accumulators and timers (for testing)
+                controller_.resetShortTermAccumulators();
             default:
                 serial_.println(F("No valid command"));
                 break;
