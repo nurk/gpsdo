@@ -1,7 +1,6 @@
 #ifndef GPSDO_V1_0_CONSTANTS_H
 #define GPSDO_V1_0_CONSTANTS_H
 
-// ReSharper disable once CppUnusedIncludeDirective
 #include <Arduino.h>
 
 enum OperationMode {
@@ -10,7 +9,7 @@ enum OperationMode {
 };
 
 constexpr uint16_t DAC_MAX_VALUE = 65535;
-constexpr uint16_t WARMUP_TIME_DEFAULT = 300; // seconds
+constexpr uint16_t WARMUP_TIME_DEFAULT = 600; // seconds
 
 using SetWarmupTimeFn = void(*)(uint16_t seconds);
 using SetDacFn = void(*)(uint16_t value);
@@ -82,6 +81,8 @@ struct ControlState {
     int32_t timerUsOld = 0;
     int32_t diffNs = 0;
     int32_t diffNsForPpsLock = 0;
+    int32_t diffNsForPpsLockOld = 0;
+    int32_t timerCounterDelta = 0;
 
     /* TIC (phase/ADC) variables */
     uint16_t ticValue = 0;
@@ -103,9 +104,9 @@ struct ControlState {
 
     /* Temperature compensation */
     // todo changed from 30 to 23
-    float tempReferenceC = 24.0f;
+    float tempReferenceC = 23.5f;
     float tempC = 0.0f;
-    float tempFilteredC = 24.0f;
+    float tempFilteredC = 23.5f;
     float tempCoefficientC = 0.0f;
 };
 

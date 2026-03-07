@@ -1,7 +1,7 @@
-// ReSharper disable CppUnusedIncludeDirective
 #ifndef EXTERNAL_EEPROM_CONTROLLER_H
 #define EXTERNAL_EEPROM_CONTROLLER_H
 
+// ReSharper disable CppUnusedIncludeDirective
 #include <Arduino.h>
 #include <I2C_eeprom.h>
 #include <Constants.h>
@@ -16,7 +16,7 @@ public:
     void invalidate();
 
 private:
-    static constexpr uint32_t kMagic = 0x47505347UL;
+    static constexpr uint32_t kMagic = 0x47505350UL;
     static constexpr uint16_t kBankSize = 2048; // bytes per bank
     static constexpr uint8_t kBankCount = 8; // total banks (2048*8 = 16384 bytes)
     static constexpr uint16_t kHeaderSize = 8; // 4 bytes magic + 4 bytes seq

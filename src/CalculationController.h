@@ -71,7 +71,7 @@ private:
                                uint16_t warmupTime);
     void ppsLockDetection();
     void determineFilterConstAndRescale(bool isRun);
-    void lowPassTicFilter();
+    void lowPassTicFilter(uint16_t warmupTime);
     void piLoop(bool isRun, uint16_t warmupTime);
     void tempCompensationAndDacOutput(bool isRun);
     void updateSnapshots(unsigned int localTimerCounter);

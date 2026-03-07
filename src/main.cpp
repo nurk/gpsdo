@@ -71,10 +71,11 @@ DAC8571 dac(0x4C); // NOLINT(*-interfaces-global-init)
 // GPS watchdog: track last byte received and last reset time
 unsigned long lastGpsReceiveMillis = 0;
 unsigned long lastGpsResetMillis = 0;
-static constexpr unsigned long GPS_RESET_TIMEOUT_MS = 60000UL; // 60 seconds
+static constexpr unsigned long GPS_RESET_TIMEOUT_MS = 600000UL; // 600 seconds
 TinyGPSPlus gps;
 
-uint16_t warmupTime = WARMUP_TIME_DEFAULT * 60; // seconds
+uint16_t warmupTime = WARMUP_TIME_DEFAULT; // seconds
+unsigned long warmupEndMillis;
 bool isWarmedUp = false;
 
 CalculationController calculationController(setDacValue, readTemperatureC, saveState, setTCA0Count);
@@ -104,52 +105,22 @@ volatile bool adcReady = false;
 volatile unsigned long overflowCount = 0;
 volatile unsigned long lastOverflowCount = 0;
 
-// Add a small median buffer for ADC samples to reject single-sample glitches
-volatile uint16_t ticBuffer[5] = {0, 0, 0, 0, 0};
-volatile uint8_t ticBufIdx = 0; // index 0..4
-
 bool ppsError = true;
 
 bool manualSaveRequested = false;
 unsigned long lastManualSaveMillis = 0;
 
 void doCalculation() {
-    // Snapshot ISR-shared variables atomically and call controller.run_once
+    // Snapshot ISR-shared variables atomically
     unsigned int localTimerCounter = 0;
     int localTicValue = 0;
     unsigned long localLastOverflow = 0;
-    // temporary holders for median calculation
-    uint16_t samp0 = 0, samp1 = 0, samp2 = 0, samp3 = 0, samp4 = 0;
 
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
         localTimerCounter = timerCounterValue;
         localLastOverflow = lastOverflowCount;
-        // copy tic buffer atomically
-        samp0 = ticBuffer[0];
-        samp1 = ticBuffer[1];
-        samp2 = ticBuffer[2];
-        samp3 = ticBuffer[3];
-        samp4 = ticBuffer[4];
+        localTicValue = ticValue;
     }
-
-    // compute median-of-5: copy into array, do a short insertion sort and take middle element
-    uint16_t sarr[5];
-    sarr[0] = samp0;
-    sarr[1] = samp1;
-    sarr[2] = samp2;
-    sarr[3] = samp3;
-    sarr[4] = samp4;
-    // insertion sort for 5 elements
-    for (int i = 1; i < 5; ++i) {
-        uint16_t key = sarr[i];
-        int j = i - 1;
-        while (j >= 0 && sarr[j] > key) {
-            sarr[j + 1] = sarr[j];
-            --j;
-        }
-        sarr[j + 1] = key;
-    }
-    localTicValue = static_cast<int>(sarr[2]); // median
 
     // If we transitioned from hold -> run, notify controller so it can reset short-term accumulators
     if (prevOpMode == hold && opMode == run) {
@@ -157,6 +128,12 @@ void doCalculation() {
     }
     prevOpMode = opMode;
 
+    // Use the direct event-triggered ADC sample (measuredTicValue), not the median.
+    // The original code read analogRead(A0) synchronously inside the PPS ISR — a single sample
+    // taken at the exact moment of the 1PPS edge.  The port replicates this via the hardware
+    // event system: the ADC fires on the same PPS edge, so measuredTicValue is the faithful
+    // equivalent.  The median-of-5 mixes readings from 5 different PPS pulses (different phases)
+    // and adds unwanted pre-filtering on top of the PI loop's own low-pass TIC filter.
     calculationController.calculate(localTimerCounter, localTicValue, localLastOverflow, (opMode == run), warmupTime);
 }
 
@@ -179,12 +156,7 @@ ISR(TCB0_INT_vect) {
 
 // ADC conversion complete interrupt
 ISR(ADC0_RESRDY_vect) {
-    // Read ADC result and push into a 3-sample circular buffer
-    uint16_t res = ADC0.RES; // Read ADC result
-    // store into 5-sample circular buffer
-    ticBuffer[ticBufIdx] = res;
-    ticBufIdx = (ticBufIdx + 1) % 5;
-    ticValue = static_cast<int>(res); // keep legacy single-sample value for debug prints
+    ticValue = static_cast<int>(ADC0.RES); // single event-triggered sample, aligned to PPS edge
     adcReady = true;
     ADC0.INTFLAGS = ADC_RESRDY_bm; // Clear the interrupt flag
 }
@@ -195,6 +167,7 @@ void setTCA0Count(const uint16_t count) {
 
 void setWarmupTime(const uint16_t seconds) {
     warmupTime = seconds;
+    warmupEndMillis = seconds * 1000;
 }
 
 void setDacValue(const uint16_t value) {
@@ -302,6 +275,7 @@ void initPinsAndLeds() {
 
 void initI2CDevices() {
     Wire.begin();
+    Wire.setClock(400000UL);
 
     if (lcd.begin(20, 4) != 0) {
         Serial2.println(F("Error: LCD not detected"));
@@ -414,6 +388,7 @@ void setup() {
         Serial2.println(F("Loaded persisted control state from EEPROM"));
         // Persisted state stores the actual 16-bit DAC output in `dacOut`.
         // Ensure the hardware DAC and internal scaled accumulators are consistent.
+        calculationController.state().time = 0; // reset time so it waits for warmup
         const uint16_t persistedDac = calculationController.state().dacOut;
         setDacValue(persistedDac); // apply persisted visible DAC output
         // Reconstruct internal scaled accumulators from persisted visible output
@@ -444,14 +419,16 @@ void setup() {
 
     RSTCTRL.RSTFR |= RSTCTRL_WDRF_bm;
     wdt_enable(WDT_PERIOD_8KCLK_gc);
+
+    warmupEndMillis = millis() + static_cast<unsigned long>(warmupTime) * 1000UL;
 }
 
 void processGps() {
     while (Serial1.available() > 0) {
         const int c = Serial1.read();
         gps.encode(static_cast<char>(c));
+        lastGpsReceiveMillis = millis();
     }
-    lastGpsReceiveMillis = millis();
     if (gps.location.isValid() && gps.location.isUpdated()) {
 #ifdef DEBUG
         Serial2.print(F("GPS position updated: "));
@@ -523,7 +500,7 @@ void loop() {
     processInputs();
     commandProcessor.process();
 
-    if (!isWarmedUp && millis() > warmupTime * 1000) {
+    if (!isWarmedUp && millis() > warmupEndMillis) {
 #ifdef DEBUG
         Serial2.println(F("Heater warm-up complete"));
 #endif

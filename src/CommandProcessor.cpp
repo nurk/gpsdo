@@ -56,7 +56,7 @@ void CommandProcessor::setWarmupTime(const uint16_t value) const {
 }
 
 void CommandProcessor::setDac(const uint16_t value) const {
-    if (value < 0 || value > 65535) {
+    if (value > 65535) {
         serial_.println(F("Not a valid DAC value - Must be between 0 and 65535"));
         return;
     }
@@ -109,6 +109,7 @@ void CommandProcessor::process() const {
             case I: // invalidate persisted controller state
                 eepromController_.invalidate();
                 serial_.println(F("EEPROM persisted state invalidated"));
+                //todo I should reset here
                 break;
             case help: // help command
                 printHelp();
@@ -157,6 +158,7 @@ void CommandProcessor::process() const {
                         break;
                     default:
                         serialOutputController_.printSummary();
+                        serialOutputController_.printControlState();
                         break;
                 }
                 break;

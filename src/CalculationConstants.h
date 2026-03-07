@@ -30,6 +30,12 @@ constexpr int THRESHOLD_DIVISOR = 1000;
 constexpr int TIME_OVERFLOW_BIAS = 50;
 constexpr int TIME_OVERFLOW_DIV = 100;
 
+// TCA0 counter range: counts 0..TCA0_COUNTER_MODULO-1 (PER=49999, driven by 5 MHz events)
+// HALF_PERIOD is used for genuine wrap detection: any raw delta < -HALF_PERIOD must be a wrap,
+// not jitter, because normal PPS-to-PPS counter advance is only 2–7 counts.
+constexpr int32_t TIMER_COUNTER_MODULO = 50000;
+constexpr int32_t TIMER_COUNTER_HALF_PERIOD = TIMER_COUNTER_MODULO / 2; // 25000
+
 // TCA0 preload count heuristic (hardware timer value)
 constexpr uint16_t TCA0_PRELOAD_COUNT = 25570;
 
@@ -49,6 +55,12 @@ constexpr int GAIN_LIMIT_EXTRA_MULT = 200; // multiplier applied to gain in the 
 // Polynomial tic scaling factors
 constexpr float TIC_SCALE_FACTOR = 1000.0f;
 constexpr float TIC_SCALE_FACTOR2 = 1000000.0f;
+
+// PI loop integrator step clamp (DAC counts per tick).
+// Normal iTermLong is 10–100 counts/tick during convergence.
+// 500 allows recovery from a large initial offset in ~60 ticks (~60 s) without
+// railing the 32767-count DAC in a single step (which 50000 would do).
+constexpr long MAX_ITERM_STEP = 500L;
 
 // Long-term aggregation constants
 constexpr int LONGTERM_INTERVAL_SEC = 300; // aggregate interval in seconds
