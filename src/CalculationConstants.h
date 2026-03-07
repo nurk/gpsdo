@@ -44,9 +44,16 @@ constexpr int PPS_LOCK_LP_FACTOR = 16;
 // During initial acquisition the oscillator may be several hundred ns/s off at the midpoint
 // DAC value.  A limit of 20 ns was unreachably tight and created a deadlock: the PI loop
 // would not run until PPS lock was achieved, but PPS lock could not be achieved until the
-// PI loop had corrected the frequency.  500 ns allows lock to be declared while still pulling
+// PI loop had corrected the frequency.  600 ns allows lock to be declared while still pulling
 // in, so the filter constant can ramp up and the loop can converge cleanly.
 constexpr int PPS_LOCK_DIFF_NS_LIMIT = 600;
+// Maximum accumulated frequency error (timerUs, in µs) allowed before PPS lock can be
+// declared.  This prevents lock being granted while the DAC has not yet settled — an
+// oscillator can have stable short-term phase noise while still running at the wrong
+// frequency, which would let lockPpsCounter count up even though dacOut is nowhere near
+// its final value.  50 µs corresponds to ~0.05 ppm residual error which is well within
+// the pull-in range of the PI loop.
+constexpr int32_t TIMER_US_LOCK_LIMIT = 50;
 
 // Filter constants bounds
 constexpr int FILTER_CONST_MIN = 1;

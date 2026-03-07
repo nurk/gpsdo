@@ -192,7 +192,7 @@ void CalculationController::updateTimersAndResets(const unsigned int localTimerC
 }
 
 void CalculationController::ppsLockDetection() {
-    // PPS lock detection low-pass
+    // Always update the IIR averages so they track the signal even during warmup.
     state_.ticValueFilteredForPpsLock = state_.ticValueFilteredForPpsLock + (state_.ticValue * PPS_LOCK_LP_FACTOR -
         state_.ticValueFilteredForPpsLock) / PPS_LOCK_LP_FACTOR;
     state_.diffNsForPpsLock = state_.diffNsForPpsLock + (state_.diffNs * PPS_LOCK_LP_FACTOR - state_.diffNsForPpsLock) /
@@ -200,11 +200,21 @@ void CalculationController::ppsLockDetection() {
 
     state_.lockPpsCounter = state_.lockPpsCounter + 1;
 
+    // TIC position must be close to the expected offset.
     if (abs(state_.ticValueFilteredForPpsLock / PPS_LOCK_LP_FACTOR - state_.ticOffset) > state_.lockPpsLimit) {
         state_.lockPpsCounter = 0;
     }
 
+    // Short-term phase noise must be small.
     if (abs(state_.diffNsForPpsLock / PPS_LOCK_LP_FACTOR) > PPS_LOCK_DIFF_NS_LIMIT) {
+        state_.lockPpsCounter = 0;
+    }
+
+    // The DAC must have settled: timerUs measures the accumulated frequency error in µs.
+    // An oscillator can have perfectly stable short-term phase while still running at the
+    // wrong frequency (large timerUs).  Require timerUs within ±TIMER_US_LOCK_LIMIT µs
+    // before allowing lock to be declared.
+    if (abs(state_.timerUs) > TIMER_US_LOCK_LIMIT) {
         state_.lockPpsCounter = 0;
     }
 
@@ -225,18 +235,8 @@ void CalculationController::determineFilterConstAndRescale(const bool isRun) {
     }
 
     if (state_.filterConst != state_.filterConstOld) {
-        if (state_.filterConst > state_.filterConstOld) {
-            // Filter just ramped up (lock acquired). Re-seed from the nominal offset rather
-            // than multiplying the stale filterConst=1 value — that value may have drifted
-            // far from nominal and multiplying it by 16 would cause a massive pTerm spike.
-            const int32_t nominal = static_cast<int32_t>(state_.ticOffset) * static_cast<int32_t>(state_.filterConst);
-            state_.ticValueFiltered = nominal;
-            state_.ticValueFilteredOld = nominal;
-        } else {
-            // Filter ramped down (lock lost) — simple rescale is fine.
-            state_.ticValueFilteredOld = state_.ticValueFilteredOld / state_.filterConstOld * state_.filterConst;
-            state_.ticValueFiltered    = state_.ticValueFiltered    / state_.filterConstOld * state_.filterConst;
-        }
+        state_.ticValueFilteredOld = state_.ticValueFilteredOld / state_.filterConstOld * state_.filterConst;
+        state_.ticValueFiltered    = state_.ticValueFiltered    / state_.filterConstOld * state_.filterConst;
     }
 }
 
