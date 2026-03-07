@@ -87,7 +87,10 @@ struct ControlState {
     /* TIC (phase/ADC) variables */
     uint16_t ticValue = 0;
     uint16_t ticValueOld = 0;
-    uint16_t ticOffset = 500;
+        // ticOffset is the expected TIC ADC reading at the nominal operating point (DAC midpoint,
+    // zero phase error).  Log data shows TIC values averaging ~350-450, so 400 is a better
+    // default than the previous 500.  This value should be calibrated to your hardware.
+    uint16_t ticOffset = 400;
     int32_t ticValueFiltered = 0;
     int32_t ticValueFilteredOld = 0;
     int32_t ticValueFilteredForPpsLock = 0;

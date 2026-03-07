@@ -40,8 +40,13 @@ constexpr int32_t TIMER_COUNTER_HALF_PERIOD = TIMER_COUNTER_MODULO / 2; // 25000
 constexpr uint16_t TCA0_PRELOAD_COUNT = 25570;
 
 // PPS lock detection low-pass / limits
-constexpr int PPS_LOCK_LP_FACTOR = 16; //change to 32 todo ?
-constexpr int PPS_LOCK_DIFF_NS_LIMIT = 20; // change to 25 todo ?
+constexpr int PPS_LOCK_LP_FACTOR = 16;
+// During initial acquisition the oscillator may be several hundred ns/s off at the midpoint
+// DAC value.  A limit of 20 ns was unreachably tight and created a deadlock: the PI loop
+// would not run until PPS lock was achieved, but PPS lock could not be achieved until the
+// PI loop had corrected the frequency.  500 ns allows lock to be declared while still pulling
+// in, so the filter constant can ramp up and the loop can converge cleanly.
+constexpr int PPS_LOCK_DIFF_NS_LIMIT = 500;
 
 // Filter constants bounds
 constexpr int FILTER_CONST_MIN = 1;

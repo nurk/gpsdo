@@ -34,6 +34,12 @@ void CalculationController::resetShortTermAccumulators() {
     state_.ticValueFilteredOld = state_.ticOffset * state_.filterConst;
     state_.ticValueFiltered = state_.ticOffset * state_.filterConst;
     state_.ticValueFilteredForPpsLock = state_.ticValueFiltered;
+    // Also reset the PPS-lock IIR accumulator so that a single bad PPS sample
+    // (e.g. the large glitch seen at time=202 in the log) cannot keep diffNsForPpsLock
+    // in the millions of nanoseconds for hundreds of seconds while the lock counter
+    // resets every tick.
+    state_.diffNsForPpsLock = 0;
+    state_.lockPpsCounter = 0;
 }
 
 void CalculationController::calculate(const unsigned int localTimerCounter,
@@ -74,6 +80,9 @@ void CalculationController::calculate(const unsigned int localTimerCounter,
     Serial2.print(F(", dacOut="));
     Serial2.print(state_.dacOut);
 
+    // PPS lock detection state
+    Serial2.print(F(", ppsLocked="));
+    Serial2.print(state_.ppsLocked ? 1 : 0);
     Serial2.print(F(", lockPpsCounter="));
     Serial2.print(state_.lockPpsCounter);
     Serial2.print(F(", ticValueFilteredForPpsLock="));
@@ -81,6 +90,11 @@ void CalculationController::calculate(const unsigned int localTimerCounter,
     Serial2.print(F(", diffNsForPpsLock="));
     Serial2.print(state_.diffNsForPpsLock);
 
+    // Filter and PI loop state
+    Serial2.print(F(", filterConst="));
+    Serial2.print(state_.filterConst);
+    Serial2.print(F(", ticValueFiltered="));
+    Serial2.print(state_.ticValueFiltered);
     Serial2.print(F(", pTerm="));
     Serial2.print(state_.pTerm);
     Serial2.print(F(", iTerm="));
@@ -88,7 +102,13 @@ void CalculationController::calculate(const unsigned int localTimerCounter,
     Serial2.print(F(", iTermLong="));
     Serial2.print(state_.iTermLong);
     Serial2.print(F(", iTermRemain="));
-    Serial2.println(state_.iTermRemain);
+    Serial2.print(state_.iTermRemain);
+
+    // Health / temperature
+    Serial2.print(F(", missedPps="));
+    Serial2.print(state_.missedPps);
+    Serial2.print(F(", tempC="));
+    Serial2.println(state_.tempC, 2);
 #endif
 }
 
