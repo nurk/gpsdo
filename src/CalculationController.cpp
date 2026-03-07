@@ -32,6 +32,8 @@ void CalculationController::resetShortTermAccumulators() {
     state_.timerUs = 0;
     state_.timerUsOld = 0;
     state_.ticValueFilteredOld = state_.ticOffset * state_.filterConst;
+    state_.ticValueFiltered = state_.ticOffset * state_.filterConst;
+    state_.ticValueFilteredForPpsLock = state_.ticValueFiltered;
 }
 
 void CalculationController::calculate(const unsigned int localTimerCounter,
@@ -52,18 +54,23 @@ void CalculationController::calculate(const unsigned int localTimerCounter,
     updateSnapshots(localTimerCounter);
 
 #ifdef DEBUG_CALCULATION
-    Serial2.print(F("timerCounter="));
-    Serial2.print(localTimerCounter);
-    Serial2.print(F(", ticValue="));
-    Serial2.print(localTicValue);
-    Serial2.print(F(", lastOverflow="));
-    Serial2.print(lastOverflow);
-    Serial2.print(F(", time="));
+
+    const float dacVoltage = static_cast<float>(state_.dacOut) / DAC_MAX_VALUE * 5.0f;
+
+    Serial2.print(F("time="));
     Serial2.print(state_.time);
+    Serial2.print(F(", timerCounter="));
+    Serial2.print(localTimerCounter);
+    Serial2.print(F(", tic="));
+    Serial2.print(localTicValue);
+    Serial2.print(F(", delta="));
+    Serial2.print(state_.timerCounterDelta);
     Serial2.print(F(", timerUs="));
     Serial2.print(state_.timerUs);
     Serial2.print(F(", diffNs="));
     Serial2.print(state_.diffNs);
+    Serial2.print(F(", dacV="));
+    Serial2.print(dacVoltage, 4);
     Serial2.print(F(", dacOut="));
     Serial2.print(state_.dacOut);
 
@@ -111,17 +118,15 @@ void CalculationController::updateTimersAndResets(const unsigned int localTimerC
                                                   const unsigned long lastOverflow,
                                                   const bool isRun,
                                                   const uint16_t warmupTime) {
-    // timer_us update
-    // The hardware timer on the target appears to count down (localTimerCounter decreases each sample).
-    // Use a signed delta with wraparound handling (legacy code used modulo 50000) to compute the counter
-    // difference in the correct direction. This avoids spurious large negative timer_us updates that
-    // created large negative diffNs and drove the integrator down.
-    int32_t deltaCounter = static_cast<int32_t>(state_.timerCounterValueOld) - static_cast<int32_t>(localTimerCounter);
-    if (deltaCounter < 0) {
-        // handle wrap-around assuming 50000 modulo used by original firmware
-        constexpr int32_t TIMER_COUNTER_MODULO = 50000;
+    // --- counter delta, half-period wrap detection ---
+    int32_t deltaCounter = static_cast<int32_t>(localTimerCounter)
+        - static_cast<int32_t>(state_.timerCounterValueOld);
+    // A genuine wrap gives delta ≈ −49997; jitter gives delta = −1..−5.
+    // The half-period threshold (25000) cleanly separates them.
+    if (deltaCounter < -TIMER_COUNTER_HALF_PERIOD) {
         deltaCounter += TIMER_COUNTER_MODULO;
     }
+    state_.timerCounterDelta = deltaCounter;
 
     state_.timerUs = state_.timerUs + TIMER_US_INCREMENT - (((deltaCounter) *
         TIMER_US_SCALE_FACTOR +
@@ -130,7 +135,7 @@ void CalculationController::updateTimersAndResets(const unsigned int localTimerC
     // reset in warmup
     if (state_.time < WARMUP_RESET_THRESHOLD || (state_.time > warmupTime - WARMUP_RESET_MARGIN && state_.time <
         warmupTime + WARMUP_RESET_MARGIN)) {
-        state_.timerUs = 0;
+        resetShortTermAccumulators();
     }
 
     const long thresholdNs = static_cast<long>(static_cast<float>(state_.timeConst) * THRESHOLD_FIXEDPOINT_MULT / state_
