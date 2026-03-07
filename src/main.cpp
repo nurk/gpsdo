@@ -1,0 +1,569 @@
+/**
+ * Software revision: 1.0
+ * Hardware revision: 1.0
+ *
+ * Libs:
+ *
+ * Ublox: https://github.com/sparkfun/SparkFun_u-blox_GNSS_v3
+ * Ublox: https://github.com/mikalhart/TinyGPSPlus
+ * JCButton: https://github.com/JChristensen/JC_Button
+ * LM75B: https://github.com/jeremycole/Temperature_LM75_Derived
+ * DAC: https://github.com/RobTillaart/DAC8571
+ * Rotary Encoder: https://github.com/mathertel/RotaryEncoder
+ * LCD: https://github.com/duinoWitchery/hd44780
+ *
+ *
+ * Ublox connected to Serial1 and I2C
+ * Debug header connected to Serial2
+ **/
+
+#include <CommandProcessor.h>
+#include <Callbacks.h>
+#include <Arduino.h>
+#include <DAC8571.h>
+#include <JC_Button.h>
+#include <RotaryEncoder.h>
+#include <TinyGPSPlus.h>
+#include <Temperature_LM75_Derived.h>
+#include <Wire.h>
+#include <hd44780.h>
+#include <hd44780ioClass/hd44780_I2Cexp.h>
+#include <util/atomic.h>
+#include <CalculationController.h>
+#include <Constants.h>
+#include <LcdController.h>
+#include <avr/wdt.h>
+#include <I2C_eeprom.h>
+#include <ExternalEEPROMController.h>
+
+#define ROTARY_PUSH PIN_PD3
+#define ROTARY_A PIN_PA0
+#define ROTARY_B PIN_PA1
+#define BUTTON_A PIN_PC2
+#define BUTTON_B PIN_PC3
+#define LOCK_LED PIN_PD4
+#define HEATING_LED PIN_PD5
+#define PPS_ERROR_LED PIN_PD6
+#define RESET_GPS PIN_PD7
+
+#define TIC PIN_PD0
+#define PPS_IN PIN_PA4
+#define OCXO_IN PIN_PA5
+
+// 128Kbit EEPROM
+I2C_eeprom eeprom(0x50, I2C_DEVICESIZE_24LC128); // NOLINT(*-interfaces-global-init)
+
+Button buttonA(BUTTON_A);
+Button buttonB(BUTTON_B);
+Button rotaryButton(ROTARY_PUSH);
+
+RotaryEncoder encoder(ROTARY_A, ROTARY_B, RotaryEncoder::LatchMode::FOUR3);
+int encoderPosition = 0;
+
+hd44780_I2Cexp lcd(0x27);
+int lcdPage = 0;
+
+Generic_LM75_11Bit temperature(0x48);
+Generic_LM75_11Bit temperatureOCXO(0x49);
+
+DAC8571 dac(0x4C); // NOLINT(*-interfaces-global-init)
+
+// GPS watchdog: track last byte received and last reset time
+unsigned long lastGpsReceiveMillis = 0;
+unsigned long lastGpsResetMillis = 0;
+static constexpr unsigned long GPS_RESET_TIMEOUT_MS = 60000UL; // 60 seconds
+TinyGPSPlus gps;
+
+uint16_t warmupTime = WARMUP_TIME_DEFAULT * 60; // seconds
+bool isWarmedUp = false;
+
+CalculationController calculationController(setDacValue, readTemperatureC, saveState, setTCA0Count);
+SerialOutputController serialOutputController(Serial2, calculationController); // NOLINT(*-interfaces-global-init)
+ExternalEEPROMController externalEepromController(eeprom); // NOLINT(*-interfaces-global-init)
+CommandProcessor commandProcessor(Serial2, // NOLINT(*-interfaces-global-init)
+                                  setDacValue,
+                                  setWarmupTime,
+                                  setOpMode,
+                                  manuallySaveState,
+                                  calculationController,
+                                  serialOutputController,
+                                  externalEepromController);
+LcdController lcdController(lcd,
+                            calculationController,
+                            readTemperatureC,
+                            readOCXOTemperatureC);
+
+OperationMode opMode = run;
+OperationMode prevOpMode = opMode;
+
+// ISR variables
+volatile unsigned int timerCounterValue;
+volatile int ticValue;
+volatile bool ppsReady = false;
+volatile bool adcReady = false;
+volatile unsigned long overflowCount = 0;
+volatile unsigned long lastOverflowCount = 0;
+
+// Add a small median buffer for ADC samples to reject single-sample glitches
+volatile uint16_t ticBuffer[5] = {0, 0, 0, 0, 0};
+volatile uint8_t ticBufIdx = 0; // index 0..4
+
+bool ppsError = true;
+
+bool manualSaveRequested = false;
+unsigned long lastManualSaveMillis = 0;
+
+void doCalculation() {
+    // Snapshot ISR-shared variables atomically and call controller.run_once
+    unsigned int localTimerCounter = 0;
+    int localTicValue = 0;
+    unsigned long localLastOverflow = 0;
+    // temporary holders for median calculation
+    uint16_t samp0 = 0, samp1 = 0, samp2 = 0, samp3 = 0, samp4 = 0;
+
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        localTimerCounter = timerCounterValue;
+        localLastOverflow = lastOverflowCount;
+        // copy tic buffer atomically
+        samp0 = ticBuffer[0];
+        samp1 = ticBuffer[1];
+        samp2 = ticBuffer[2];
+        samp3 = ticBuffer[3];
+        samp4 = ticBuffer[4];
+    }
+
+    // compute median-of-5: copy into array, do a short insertion sort and take middle element
+    uint16_t sarr[5];
+    sarr[0] = samp0;
+    sarr[1] = samp1;
+    sarr[2] = samp2;
+    sarr[3] = samp3;
+    sarr[4] = samp4;
+    // insertion sort for 5 elements
+    for (int i = 1; i < 5; ++i) {
+        uint16_t key = sarr[i];
+        int j = i - 1;
+        while (j >= 0 && sarr[j] > key) {
+            sarr[j + 1] = sarr[j];
+            --j;
+        }
+        sarr[j + 1] = key;
+    }
+    localTicValue = static_cast<int>(sarr[2]); // median
+
+    // If we transitioned from hold -> run, notify controller so it can reset short-term accumulators
+    if (prevOpMode == hold && opMode == run) {
+        calculationController.resetShortTermAccumulators();
+    }
+    prevOpMode = opMode;
+
+    calculationController.calculate(localTimerCounter, localTicValue, localLastOverflow, (opMode == run), warmupTime);
+}
+
+// Overflow interrupt for TCA0 - 5MHz pulse counter
+ISR(TCA0_OVF_vect) {
+    overflowCount++;
+    TCA0.SINGLE.INTFLAGS = TCA_SINGLE_OVF_bm; // Clear the overflow interrupt flag
+}
+
+// Capture interrupt for TCB0 - PPS event
+ISR(TCB0_INT_vect) {
+    timerCounterValue = TCA0.SINGLE.CNT;
+    // apparently there is no need to reset the counter
+    // TCA0.SINGLE.CNT = 0; // Reset pulse counter
+    lastOverflowCount = overflowCount;
+    overflowCount = 0;
+    ppsReady = true;
+    TCB0.INTFLAGS = TCB_CAPT_bm; // Clear the capture interrupt flag
+}
+
+// ADC conversion complete interrupt
+ISR(ADC0_RESRDY_vect) {
+    // Read ADC result and push into a 3-sample circular buffer
+    uint16_t res = ADC0.RES; // Read ADC result
+    // store into 5-sample circular buffer
+    ticBuffer[ticBufIdx] = res;
+    ticBufIdx = (ticBufIdx + 1) % 5;
+    ticValue = static_cast<int>(res); // keep legacy single-sample value for debug prints
+    adcReady = true;
+    ADC0.INTFLAGS = ADC_RESRDY_bm; // Clear the interrupt flag
+}
+
+void setTCA0Count(const uint16_t count) {
+    TCA0.SINGLE.CNT = count;
+}
+
+void setWarmupTime(const uint16_t seconds) {
+    warmupTime = seconds;
+}
+
+void setDacValue(const uint16_t value) {
+    if (value <= DAC_MAX_VALUE) {
+        dac.write(value);
+    }
+    else {
+        Serial2.print(F("Error: DAC value out of range: "));
+        Serial2.println(value);
+    }
+}
+
+float readTemperatureC() {
+    return temperature.readTemperatureC();
+}
+
+float readOCXOTemperatureC() {
+    return temperatureOCXO.readTemperatureC();
+}
+
+void saveState() {
+    externalEepromController.saveState(calculationController);
+}
+
+void manuallySaveState() {
+    manualSaveRequested = true;
+}
+
+void setOpMode(const OperationMode mode, const int32_t holdValue) {
+    if (holdValue > 0 && holdValue <= DAC_MAX_VALUE) {
+        calculationController.state().holdValue = holdValue;
+    }
+    opMode = mode;
+    lcdController.setOpMode(opMode);
+}
+
+void encoderTick() {
+    encoder.tick();
+}
+
+void initGps() {
+    Serial2.println(F("Initializing GPS module with custom configuration..."));
+    delay(500);
+
+    // todo I think this is looping for a long time.
+    //while (Serial1.available()) Serial1.read();
+
+    // Disable GSV (Satellite list)
+    Serial1.println("$PUBX,40,GSV,0,0,0,0,0,0*59");
+    // Disable GSA (DOP/Active Satellites)
+    Serial1.println("$PUBX,40,GSA,0,0,0,0,0,0*4E");
+    // Disable VTG (Track/Speed)
+    Serial1.println("$PUBX,40,VTG,0,0,0,0,0,0*5E");
+    // Disable GLL (Geographic Position)
+    Serial1.println("$PUBX,40,GLL,0,0,0,0,0,0*5C");
+
+    Serial1.flush();
+
+    Serial2.println(F("GPS initialized with custom configuration"));
+}
+
+void resetGPS() {
+    digitalWriteFast(RESET_GPS, HIGH);
+    delay(50);
+    digitalWriteFast(RESET_GPS, LOW);
+    initGps();
+}
+
+void processInputs() {
+    rotaryButton.read();
+    buttonA.read();
+    buttonB.read();
+    encoder.tick();
+
+    const int newEncoderPosition = encoder.getPosition(); // NOLINT(*-narrowing-conversions)
+    if (encoderPosition != newEncoderPosition) {
+        const int diff = newEncoderPosition - encoderPosition;
+        lcdPage = (lcdPage + diff + lcdController.pageCount()) % lcdController.pageCount();
+        lcdController.update(lcdPage);
+    }
+    encoderPosition = newEncoderPosition;
+}
+
+void initPinsAndLeds() {
+    pinMode(BUTTON_A, INPUT_PULLUP);
+    pinMode(BUTTON_B, INPUT_PULLUP);
+    pinMode(ROTARY_PUSH, INPUT_PULLUP);
+    pinMode(ROTARY_A, INPUT_PULLUP);
+    pinMode(ROTARY_B, INPUT_PULLUP);
+
+    pinMode(RESET_GPS, OUTPUT);
+    digitalWriteFast(RESET_GPS, LOW);
+
+    pinMode(LOCK_LED, OUTPUT);
+    pinMode(HEATING_LED, OUTPUT);
+    pinMode(PPS_ERROR_LED, OUTPUT);
+    digitalWriteFast(LOCK_LED, LOW);
+    digitalWriteFast(HEATING_LED, HIGH);
+    digitalWriteFast(PPS_ERROR_LED, LOW);
+
+    pinMode(TIC, INPUT);
+    pinMode(PPS_IN, INPUT);
+    pinMode(OCXO_IN, INPUT);
+}
+
+void initI2CDevices() {
+    Wire.begin();
+
+    if (lcd.begin(20, 4) != 0) {
+        Serial2.println(F("Error: LCD not detected"));
+    }
+    else {
+        lcd.clear();
+        Serial2.println(F("LCD initialized successfully"));
+        lcd.setCursor(0, 0);
+        lcd.print(F("LCD initialized successfully"));
+    }
+
+    if (!eeprom.begin()) {
+        Serial2.println(F("Error: EEPROM not detected"));
+    }
+    else {
+        Serial2.println(F("EEPROM initialized successfully"));
+    }
+
+    if (!dac.begin()) {
+        Serial2.println(F("Error: DAC not detected"));
+    }
+    else {
+        Serial2.println(F("DAC initialized successfully"));
+    }
+    dac.write(DAC_MAX_VALUE / 2);
+}
+
+void initUserInputs() {
+    buttonA.begin();
+    buttonB.begin();
+    rotaryButton.begin();
+
+    attachInterrupt(ROTARY_A, encoderTick, CHANGE);
+    attachInterrupt(ROTARY_B, encoderTick, CHANGE);
+}
+
+void initEventsAndTimers() {
+    // Configure Event System Channel 0: PA5 (5MHz) -> TCA0
+    EVSYS.CHANNEL0 = EVSYS_GENERATOR_PORT0_PIN5_gc; // Route PA5 to Event Channel 0
+    EVSYS.USERTCA0 = EVSYS_CHANNEL_CHANNEL0_gc; // Connect Channel 0 to TCA0
+
+    // Configure TCA0 as event counter for 5MHz pulses
+    TCA0.SINGLE.CTRLA = 0; // Disable TCA0 for configuration
+    TCA0.SINGLE.CTRLD &= ~TCA_SINGLE_SPLITM_bm; // Ensure single mode (not split)
+    TCA0.SINGLE.CTRLB = TCA_SINGLE_WGMODE_NORMAL_gc; // Set normal waveform generation mode
+    TCA0.SINGLE.EVCTRL = TCA_SINGLE_EVACT_POSEDGE_gc | TCA_SINGLE_CNTEI_bm; // Count on rising edges via event input
+    TCA0.SINGLE.PER = 49999; // Set period for modulo-50000 counting
+    TCA0.SINGLE.CNT = 0; // Initialize counter to zero
+    TCA0.SINGLE.INTFLAGS = TCA_SINGLE_OVF_bm; // Clear any pending overflow interrupt
+    TCA0.SINGLE.INTCTRL = TCA_SINGLE_OVF_bm; // Enable overflow interrupt
+    TCA0.SINGLE.CTRLA = TCA_SINGLE_ENABLE_bm; // Enable TCA0
+
+    // Configure Event System Channel 1: PA4 (PPS) -> TCB0
+    EVSYS.CHANNEL1 = EVSYS_GENERATOR_PORT0_PIN4_gc; // Route PA4 to Event Channel 1
+    EVSYS.USERTCB0 = EVSYS_CHANNEL_CHANNEL1_gc; // Connect Channel 1 to TCB0
+
+    // Configure TCB0 for input capture on PPS edge
+    TCB0.CTRLA = 0; // Disable TCB0 for configuration
+    TCB0.CTRLB = TCB_CNTMODE_CAPT_gc; // Set input capture mode
+    TCB0.EVCTRL = TCB_CAPTEI_bm | TCB_EDGE_bm | TCB_FILTER_bm;
+    TCB0.INTFLAGS = TCB_CAPT_bm; // Clear any pending capture interrupt
+    TCB0.INTCTRL = TCB_CAPT_bm; // Enable capture interrupt
+    TCB0.CTRLA = TCB_CLKSEL_CLKDIV1_gc | TCB_ENABLE_bm; // Enable TCB0 with CLK/1 prescaler
+
+    // Configure ADC0 for hardware event-triggered conversion
+    EVSYS.USERADC0 = EVSYS_CHANNEL_CHANNEL1_gc; // Connect Channel 1 (PPS) to ADC0 start trigger
+
+    // Configure voltage reference before ADC
+    VREF.CTRLA = VREF_ADC0REFSEL_1V1_gc; // Select 1.1V internal reference
+    VREF.CTRLB = VREF_ADC0REFEN_bm; // Enable ADC0 voltage reference
+
+    // Configure ADC0 for event-triggered conversion on PDO (PD0/AIN0)
+    ADC0.CTRLA = 0; // Disable ADC0 for configuration
+    // todo play with prescaler
+    ADC0.CTRLC = ADC_PRESC_DIV16_gc | ADC_REFSEL_INTREF_gc; // Set ADC clock prescaler to CLK/16, Select internal voltage reference NOLINT(*-suspicious-enum-usage)
+    // TODO play with this value and SAMPCTRL to see if we get a lock.
+    // trying 16_gc and 20 samples <-- did not really work.  Near lock\
+    // trying 32_gc and 31 samples
+    ADC0.CTRLD = ADC_INITDLY_DLY0_gc; // Set 16 cycle initial delay for reference settling
+    //ADC0.CTRLD = ADC_INITDLY_DLY32_gc; // Set 32 cycle initial delay for reference settling
+    ADC0.SAMPCTRL = 10;
+    // Set sample duration to 10 ADC clock cycles // could be set to 31 for max sample time of 32 cycles if needed for high source impedance
+    ADC0.MUXPOS = ADC_MUXPOS_AIN0_gc; // Select AIN0 (PD0)
+    ADC0.EVCTRL = ADC_STARTEI_bm; // Enable event-triggered conversion start
+    ADC0.INTFLAGS = ADC_RESRDY_bm; // Clear any pending result ready interrupt
+    ADC0.INTCTRL = ADC_RESRDY_bm; // Enable result ready interrupt
+    ADC0.CTRLA = ADC_ENABLE_bm | ADC_RESSEL_10BIT_gc; // Enable ADC0 with 10-bit resolution
+
+    // setting interrupt priorities
+    // only one vector can have the highest priority
+    // in this case we want TCB0 (PPS capture) to have the highest priority
+    // The default priority for CPUINT.LVL0VEC
+    CPUINT.LVL1VEC = TCB0_INT_vect_num; // set highest priority for TCB0 interrupt
+    sei(); // Enable global interrupts
+}
+
+void setup() {
+    Serial2.begin(115200);
+
+    initPinsAndLeds();
+
+    Serial1.begin(9600);
+
+    initI2CDevices();
+    initUserInputs();
+    initEventsAndTimers();
+
+    externalEepromController.begin();
+    if (externalEepromController.loadState(calculationController)) {
+        Serial2.println(F("Loaded persisted control state from EEPROM"));
+        // Persisted state stores the actual 16-bit DAC output in `dacOut`.
+        // Ensure the hardware DAC and internal scaled accumulators are consistent.
+        const uint16_t persistedDac = calculationController.state().dacOut;
+        setDacValue(persistedDac); // apply persisted visible DAC output
+        // Reconstruct internal scaled accumulators from persisted visible output
+
+        // todo not sure i really need the lines below
+
+        // calculationController.state().dacValueOut = static_cast<int32_t>(persistedDac) * calculationController.state().
+        //     timeConst;
+        // calculationController.state().dacValue = calculationController.state().dacValueOut;
+    }
+    else {
+        Serial2.println(F("No valid persisted control state found; using defaults"));
+        // Initialize DAC and controller state to a sensible mid-scale value so software state
+        // and the physical DAC are consistent. This prevents `dacOut` from remaining zero
+        // when no persisted state is available.
+        constexpr uint16_t initDac = DAC_MAX_VALUE / 2;
+        // Set controller visible/output state
+        calculationController.state().dacOut = initDac;
+        // Internal scaled accumulator/state should reflect the output multiplied by timeConst
+        calculationController.state().dacValueOut = static_cast<int32_t>(initDac) * calculationController.state().
+            timeConst;
+        calculationController.state().dacValue = calculationController.state().dacValueOut;
+        // Apply to the physical DAC
+        setDacValue(initDac);
+    }
+
+    initGps();
+
+    RSTCTRL.RSTFR |= RSTCTRL_WDRF_bm;
+    wdt_enable(WDT_PERIOD_8KCLK_gc);
+}
+
+void processGps() {
+    while (Serial1.available() > 0) {
+        const int c = Serial1.read();
+        gps.encode(static_cast<char>(c));
+    }
+    lastGpsReceiveMillis = millis();
+    if (gps.location.isValid() && gps.location.isUpdated()) {
+#ifdef DEBUG
+        Serial2.print(F("GPS position updated: "));
+        Serial2.print(gps.location.lat(), 6);
+        Serial2.print(F(", "));
+        Serial2.println(gps.location.lng(), 6);
+#endif
+        lcdController.gpsData().latitude = gps.location.lat();
+        lcdController.gpsData().longitude = gps.location.lng();
+        lcdController.gpsData().isPositionValid = true;
+    }
+
+    if (gps.satellites.isValid() && gps.satellites.isUpdated()) {
+#ifdef DEBUG
+        Serial2.print(F("GPS satellites updated: "));
+        Serial2.println(gps.satellites.value());
+#endif
+        lcdController.gpsData().satellites = gps.satellites.value();
+        lcdController.gpsData().isSatellitesValid = true;
+    }
+
+    if (gps.date.isValid() && gps.date.isUpdated()) {
+#ifdef DEBUG
+        Serial2.print(F("GPS date updated: "));
+        Serial2.print(gps.date.year());
+        Serial2.print(F("-"));
+        Serial2.print(gps.date.month());
+        Serial2.print(F("-"));
+        Serial2.println(gps.date.day());
+#endif
+        lcdController.gpsData().year = gps.date.year();
+        lcdController.gpsData().month = gps.date.month();
+        lcdController.gpsData().day = gps.date.day();
+        lcdController.gpsData().isDateValid = true;
+    }
+
+    if (gps.time.isValid() && gps.time.isUpdated()) {
+#ifdef DEBUG
+        Serial2.print(F("GPS time updated: "));
+        Serial2.print(gps.time.hour());
+        Serial2.print(F(":"));
+        Serial2.print(gps.time.minute());
+        Serial2.print(F(":"));
+        Serial2.print(gps.time.second());
+        Serial2.print(F("."));
+        Serial2.println(gps.time.centisecond());
+#endif
+        lcdController.gpsData().hour = gps.time.hour();
+        lcdController.gpsData().minute = gps.time.minute();
+        lcdController.gpsData().second = gps.time.second();
+        lcdController.gpsData().centisecond = gps.time.centisecond();
+        lcdController.gpsData().isTimeValid = true;
+    }
+
+    // GPS watchdog: reset if no data received within timeout
+    if (lastGpsReceiveMillis != 0 && (millis() - lastGpsReceiveMillis > GPS_RESET_TIMEOUT_MS) &&
+        (millis() - lastGpsResetMillis > GPS_RESET_TIMEOUT_MS)) {
+        Serial2.println(F("GPS watchdog: resetting GPS due to timeout"));
+        resetGPS();
+        lastGpsResetMillis = millis();
+    }
+}
+
+long currentMillis = 0;
+
+void loop() {
+    lcdController.update(lcdPage);
+    processGps();
+    processInputs();
+    commandProcessor.process();
+
+    if (!isWarmedUp && millis() > warmupTime * 1000) {
+#ifdef DEBUG
+        Serial2.println(F("Heater warm-up complete"));
+#endif
+        isWarmedUp = true;
+        digitalWriteFast(HEATING_LED, LOW);
+    }
+
+    // missed PPS
+    // overflowCount will reset automatically once a PPS is received
+    if (isWarmedUp && !ppsError && overflowCount > 130) {
+        ppsError = true;
+        digitalWriteFast(PPS_ERROR_LED, HIGH);
+    }
+
+    if (ppsReady && adcReady) {
+#ifdef DEBUG
+        Serial2.println(F("===== PPS Event ====="));
+        Serial2.print(F("Captured Pulse Count: "));
+        Serial2.println(timerCounterValue);
+        Serial2.print(F("ADC Reading (PD0): "));
+        Serial2.println(ticValue);
+        Serial2.print(F("Overflow Count: "));
+        Serial2.println(lastOverflowCount);
+#endif
+        ppsReady = false;
+        adcReady = false;
+
+        if (ppsError) {
+            ppsError = false;
+            digitalWriteFast(PPS_ERROR_LED, LOW);
+        }
+        doCalculation();
+
+        if (manualSaveRequested && millis() - lastManualSaveMillis > 5000) {
+            saveState();
+            Serial2.println(F("Controller state manually saved to EEPROM"));
+            lastManualSaveMillis = millis();
+            manualSaveRequested = false;
+        }
+    }
+
+    wdt_reset();
+}

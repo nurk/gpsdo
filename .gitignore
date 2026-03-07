@@ -1,2 +1,4 @@
 /.pio/
 /logs/
+.idea
+.DS_Store

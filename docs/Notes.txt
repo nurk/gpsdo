@@ -1,0 +1,51 @@
+diffNsForPpsLock rang: abs(320)
+ticValueFilteredForPpsLock: [6400, 9615]
+
+
+Test:
+    ADC prescaler: 16
+    ADC delay: 32 cycles
+    ADC samples: 31
+
+    Near lock.
+    diffNsForPpsLock seems to fall between threshold
+    ticValueFilteredForPpsLock was outside of threshold
+
+    This test was stopped at 2.4533V for the DAC.
+
+Test:
+    ADC prescaler: 64
+    ADC delay: 32 cycles
+    ADC samples: 31
+
+    diffNsForPpsLock looks fine
+    ticValueFilteredForPpsLock seems to low.  Is in the 5400 range.
+    Stopped at about 2.4 volts for the DAC.
+
+Test:
+    ADC prescaler: 4
+    ADC delay: 32 cycles
+    ADC samples: 31
+
+    diffNsForPpsLock
+    ticValueFilteredForPpsLock
+
+    Tic value is 1023.  Not good
+
+Test:
+    loaded previous eeprom state
+    ADC prescaler: 16
+    ADC delay: 0 cycles
+    ADC samples: 10
+
+    diffNsForPpsLock
+    ticValueFilteredForPpsLock
+
+    At 2.43822 promising values but dac value kept reducing.
+    Very promising at 2.4325V
+    But then it dropped lower and the counter reset.
+
+    I think I need to choose a setting and let it run for hours and log the output. (RPI needed)
+
+    2.3970V was very promising.
+
