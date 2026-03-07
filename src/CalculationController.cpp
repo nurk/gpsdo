@@ -31,13 +31,14 @@ long CalculationController::computeTempCorrectionScaled() const {
 void CalculationController::resetShortTermAccumulators() {
     state_.timerUs = 0;
     state_.timerUsOld = 0;
-    state_.ticValueFilteredOld = state_.ticOffset * state_.filterConst;
-    state_.ticValueFiltered = state_.ticOffset * state_.filterConst;
+    // Seed the TIC filter to the expected nominal value (ticOffset * filterConst) so that
+    // it does not drift to large negative/positive values during warmup when filterConst=1
+    // and timerUs is accumulating an uncorrected frequency error.
+    state_.ticValueFilteredOld = static_cast<int32_t>(state_.ticOffset) * static_cast<int32_t>(state_.filterConst);
+    state_.ticValueFiltered = state_.ticValueFilteredOld;
     state_.ticValueFilteredForPpsLock = state_.ticValueFiltered;
-    // Also reset the PPS-lock IIR accumulator so that a single bad PPS sample
-    // (e.g. the large glitch seen at time=202 in the log) cannot keep diffNsForPpsLock
-    // in the millions of nanoseconds for hundreds of seconds while the lock counter
-    // resets every tick.
+    // Reset the PPS-lock IIR accumulator so that a single bad PPS sample cannot keep
+    // diffNsForPpsLock in the millions of nanoseconds for hundreds of seconds.
     state_.diffNsForPpsLock = 0;
     state_.lockPpsCounter = 0;
 }
@@ -224,8 +225,18 @@ void CalculationController::determineFilterConstAndRescale(const bool isRun) {
     }
 
     if (state_.filterConst != state_.filterConstOld) {
-        state_.ticValueFilteredOld = state_.ticValueFilteredOld / state_.filterConstOld * state_.filterConst;
-        state_.ticValueFiltered = state_.ticValueFiltered / state_.filterConstOld * state_.filterConst;
+        if (state_.filterConst > state_.filterConstOld) {
+            // Filter just ramped up (lock acquired). Re-seed from the nominal offset rather
+            // than multiplying the stale filterConst=1 value — that value may have drifted
+            // far from nominal and multiplying it by 16 would cause a massive pTerm spike.
+            const int32_t nominal = static_cast<int32_t>(state_.ticOffset) * static_cast<int32_t>(state_.filterConst);
+            state_.ticValueFiltered = nominal;
+            state_.ticValueFilteredOld = nominal;
+        } else {
+            // Filter ramped down (lock lost) — simple rescale is fine.
+            state_.ticValueFilteredOld = state_.ticValueFilteredOld / state_.filterConstOld * state_.filterConst;
+            state_.ticValueFiltered    = state_.ticValueFiltered    / state_.filterConstOld * state_.filterConst;
+        }
     }
 }
 

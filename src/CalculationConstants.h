@@ -46,7 +46,7 @@ constexpr int PPS_LOCK_LP_FACTOR = 16;
 // would not run until PPS lock was achieved, but PPS lock could not be achieved until the
 // PI loop had corrected the frequency.  500 ns allows lock to be declared while still pulling
 // in, so the filter constant can ramp up and the loop can converge cleanly.
-constexpr int PPS_LOCK_DIFF_NS_LIMIT = 500;
+constexpr int PPS_LOCK_DIFF_NS_LIMIT = 600;
 
 // Filter constants bounds
 constexpr int FILTER_CONST_MIN = 1;
