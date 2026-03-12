@@ -4,9 +4,10 @@
 // ReSharper disable once CppUnusedIncludeDirective
 #include <Arduino.h>
 
-enum OperationMode {
-    run,
-    hold
+enum OpMode {
+    RUN,
+    HOLD,
+    WARMUP
 };
 
 constexpr uint16_t DAC_MAX_VALUE = 65535;
@@ -19,7 +20,7 @@ using ReadOCXOTempFn = float(*)();
 using SaveStateFn = void(*)();
 using ManuallySaveStateFn = void(*)();
 using SetTCA0CountFn = void(*)(uint16_t count);
-using SetOpModeFn = void(*)(OperationMode mode, int32_t holdValue);
+using SetOpModeFn = void(*)(OpMode mode, int32_t holdValue);
 
 struct GpsData {
     bool isPositionValid = false;
@@ -42,100 +43,40 @@ struct GpsData {
 };
 
 struct ControlState {
-    /* PI-loop state */
-    float iTerm = 0.0f;
-    float pTerm = 0.0f;
-    int32_t iTermLong = 0;
-    float iTermRemain = 0.0f;
+    float dacVoltage = 2.5f;
+    int32_t holdValue = 0;
 
-    float gain = 12.0f;
-    float damping = 3.0f;
+    int32_t timerCounterValueOld = 0;
+    int32_t timerCounterValueReal = 0;
+    int32_t timerCounterError = 0;
 
-    /* PPS / time bookkeeping */
-    uint16_t missedPps = 0;
-    uint32_t timeSinceMissedPps = 0;
+    int32_t time = 0;
+    int32_t timeOld = 0;
 
-    /* DAC values (internal scaled units) */
-    int32_t dacValue = 0; // internal integrator accumulator (may exceed 16 bits)
-    int32_t dacValueOut = 0; // scaled output before division by timeConst
-    uint16_t dacOut = 0;
-    uint16_t holdValue = 0;
+    int32_t missedPpsCounter = 0;
+    int32_t timeSinceMissedPps = 0;
 
-    /* PPS lock detection */
-    int16_t lockPpsLimit = 100;
-    int16_t lockPpsFactor = 5;
-    uint32_t lockPpsCounter = 0;
-    bool ppsLocked = false;
+    int32_t ticValue = 0;
+    int32_t ticValueOld = 0;
+    double ticValueCorrection = 0.0;    // linearized tic (raw)
+    double ticValueCorrectionOld = 0.0;
+    double ticValueCorrectionOffset = 0.0; // linearized value at ticOffset (zero reference)
+    double ticCorrectedNetValue = 0.0;      // ticValueCorrection - ticValueCorrectionOffset
 
-    /* Time/filtering constants */
-    uint16_t timeConst = 32;
-    uint16_t timeConstOld = 32;
-    uint8_t filterDiv = 2;
-    uint16_t filterConst = 16;
-    uint16_t filterConstOld = 16;
-
-    /* Timer and error tracking */
-    uint32_t time = 0;
-    uint32_t timeOld = 0;
-    uint16_t timerCounterValueOld = 0;
-    int32_t timerUs = 0;
-    int32_t timerUsOld = 0;
-    int32_t diffNs = 0;
-    int32_t diffNsForPpsLock = 0;
-    int32_t timerCounterDelta = 0;
-
-    /* TIC (phase/ADC) variables */
-    uint16_t ticValue = 0;
-    uint16_t ticValueOld = 0;
-        // ticOffset is the expected TIC ADC reading at the nominal operating point (DAC midpoint,
-    // zero phase error).  Log data shows TIC values averaging ~350-450, so 400 is a better
-    // default than the previous 500.  This value should be calibrated to your hardware.
-    uint16_t ticOffset = 400;
-    int32_t ticValueFiltered = 0;
-    int32_t ticValueFilteredOld = 0;
-    int32_t ticValueFilteredForPpsLock = 0;
-
-    /* TIC linearization */
-    float ticMin = 12.0f;
-    float ticMax = 1012.0f;
-    float x3 = 0.03f;
-    float x2 = 0.1f;
-    float x1 = 0.0f;
-    float ticValueCorrection = 0.0f;
-    float ticValueCorrectionOld = 0.0f;
-    float ticValueCorrectionOffset = 0.0f;
-
-    /* Temperature compensation */
-    // todo changed from 30 to 23
-    float tempReferenceC = 23.5f;
-    float tempC = 0.0f;
-    float tempFilteredC = 23.5f;
-    float tempCoefficientC = 0.0f;
+    double ticOffset = 500.0;            // expected centre of TIC range (counts)
+    // Polynomial coefficients for TIC linearization.
+    // The polynomial is evaluated on a normalised input x = (tic - TIC_MIN) / (TIC_MAX - TIC_MIN) * 1000
+    // using Horner form:  x*(a1 + x*(a2 + x*a3))
+    // x1 is derived: x1 = 1 - x2 - x3  (ensures unity gain at full scale)
+    // x2 and x3 are the quadratic and cubic correction terms.
+    // Pre-scale x2 by 1/1000 and x3 by 1/100000 when storing so no runtime division is needed.
+    double x2Coefficient = 1.0e-4;     // quadratic term  (= 0.1 / 1000)
+    double x3Coefficient = 3.0e-7;     // cubic term      (= 0.03 / 100000)
 };
 
-struct LongTermControlState {
-    int32_t i = 0; // counter for 300secs before storing temp and dac readings average
-    int32_t j = 0; // counter for stored 300sec readings
-    int32_t k = 0; // counter for stored 3hour readings
+constexpr int32_t COUNTS_PER_PPS = 5000000;
+constexpr int32_t MODULO = 50000;
 
-    //300sec storage
-    uint32_t ticArray[144] = {};
-    uint32_t tempArray[144] = {};
-    uint32_t dacArray[144] = {};
-
-    int32_t sumTic = 0;
-    int32_t sumTic2 = 0;
-    int32_t sumTemp = 0;
-    int32_t sumTemp2 = 0;
-    uint32_t sumDac = 0;
-    uint32_t sumDac2 = 0;
-
-    uint32_t ticAverage3h = 0;
-    uint32_t tempAverage3h = 0;
-    uint32_t dacAverage3h = 0;
-
-    uint32_t totalTime3h = 0; // counter for power-up time updated every third hour
-    uint32_t restarts = 0; // counter for restarts/power-ups
-    bool restartFlag = true;
-};
+constexpr double TIC_MIN = 12.0;
+constexpr double TIC_MAX = 1012.0;
 #endif //GPSDO_V1_0_CONSTANTS_H

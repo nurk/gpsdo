@@ -23,7 +23,7 @@ public:
 
     void update(int page);
 
-    void setOpMode(const OperationMode mode) { opMode_ = mode; }
+    void setOpMode(const OpMode mode) { opMode_ = mode; }
 
 private:
     hd44780_I2Cexp& lcd_;
@@ -35,19 +35,17 @@ private:
 
     void drawPageZero() const;
     void drawPageOne() const;
-    void drawPageTwo() const;
-    void drawPageThree() const;
 
     // Formats decimal degrees into a DMS string (DDD° MM' SS.S")
     // If isLatitude==true, appends N or S; otherwise appends E or W.
     static void formatDMS(double value, char* out, bool isLatitude);
 
     int currentPage_ = 0;
-    int pageCount_ = 4;
+    int pageCount_ = 2;
     unsigned long lastUpdateMillis_ = 0;
 
     // Track operation mode so pages can indicate hold/run
-    OperationMode opMode_;
+    OpMode opMode_ = RUN;
 };
 
 #endif //GPSDO_V1_0_LCDCONTROLLER_H

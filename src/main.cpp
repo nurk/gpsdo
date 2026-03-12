@@ -17,7 +17,6 @@
  * Debug header connected to Serial2
  **/
 
-#include <CommandProcessor.h>
 #include <Callbacks.h>
 #include <Arduino.h>
 #include <DAC8571.h>
@@ -34,7 +33,6 @@
 #include <LcdController.h>
 #include <avr/wdt.h>
 #include <I2C_eeprom.h>
-#include <ExternalEEPROMController.h>
 
 #define ROTARY_PUSH PIN_PD3
 #define ROTARY_A PIN_PA0
@@ -76,48 +74,34 @@ TinyGPSPlus gps;
 
 uint16_t warmupTime = WARMUP_TIME_DEFAULT; // seconds
 unsigned long warmupEndMillis;
-bool isWarmedUp = false;
 
 CalculationController calculationController(setDacValue, readTemperatureC, saveState, setTCA0Count);
-SerialOutputController serialOutputController(Serial2, calculationController); // NOLINT(*-interfaces-global-init)
-ExternalEEPROMController externalEepromController(eeprom); // NOLINT(*-interfaces-global-init)
-CommandProcessor commandProcessor(Serial2, // NOLINT(*-interfaces-global-init)
-                                  setDacValue,
-                                  setWarmupTime,
-                                  setOpMode,
-                                  manuallySaveState,
-                                  calculationController,
-                                  serialOutputController,
-                                  externalEepromController);
 LcdController lcdController(lcd,
                             calculationController,
                             readTemperatureC,
                             readOCXOTemperatureC);
 
-OperationMode opMode = run;
-OperationMode prevOpMode = opMode;
+OpMode opMode = WARMUP;
 
 // ISR variables
-volatile unsigned int timerCounterValue;
-volatile int ticValue;
+volatile int32_t timerCounterValue;
+volatile int32_t ticValue;
 volatile bool ppsReady = false;
 volatile bool adcReady = false;
 volatile unsigned long overflowCount = 0;
 volatile unsigned long lastOverflowCount = 0;
 
-// Add a small median buffer for ADC samples to reject single-sample glitches
-volatile uint16_t ticBuffer[5] = {0, 0, 0, 0, 0};
-volatile uint8_t ticBufIdx = 0; // index 0..4
-
 bool ppsError = true;
 
-bool manualSaveRequested = false;
-unsigned long lastManualSaveMillis = 0;
+
+void saveState() {
+// todo
+}
 
 void doCalculation() {
     // Snapshot ISR-shared variables atomically
-    unsigned int localTimerCounter = 0;
-    int localTicValue = 0;
+    int32_t localTimerCounter = 0;
+    int32_t localTicValue = 0;
     unsigned long localLastOverflow = 0;
 
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
@@ -126,19 +110,7 @@ void doCalculation() {
         localTicValue = ticValue;
     }
 
-    // If we transitioned from hold -> run, notify controller so it can reset short-term accumulators
-    if (prevOpMode == hold && opMode == run) {
-        calculationController.resetShortTermAccumulators();
-    }
-    prevOpMode = opMode;
-
-    // Use the direct event-triggered ADC sample (measuredTicValue), not the median.
-    // The original code read analogRead(A0) synchronously inside the PPS ISR — a single sample
-    // taken at the exact moment of the 1PPS edge.  The port replicates this via the hardware
-    // event system: the ADC fires on the same PPS edge, so measuredTicValue is the faithful
-    // equivalent.  The median-of-5 mixes readings from 5 different PPS pulses (different phases)
-    // and adds unwanted pre-filtering on top of the PI loop's own low-pass TIC filter.
-    calculationController.calculate(localTimerCounter, localTicValue, localLastOverflow, (opMode == run), warmupTime);
+    calculationController.calculate(localTimerCounter, localTicValue, localLastOverflow, opMode);
 }
 
 // Overflow interrupt for TCA0 - 5MHz pulse counter
@@ -150,8 +122,6 @@ ISR(TCA0_OVF_vect) {
 // Capture interrupt for TCB0 - PPS event
 ISR(TCB0_INT_vect) {
     timerCounterValue = TCA0.SINGLE.CNT;
-    // apparently there is no need to reset the counter
-    // TCA0.SINGLE.CNT = 0; // Reset pulse counter
     lastOverflowCount = overflowCount;
     overflowCount = 0;
     ppsReady = true;
@@ -160,7 +130,7 @@ ISR(TCB0_INT_vect) {
 
 // ADC conversion complete interrupt
 ISR(ADC0_RESRDY_vect) {
-    ticValue = static_cast<int>(ADC0.RES); // single event-triggered sample, aligned to PPS edge
+    ticValue = static_cast<int>(ADC0.RES);
     adcReady = true;
     ADC0.INTFLAGS = ADC_RESRDY_bm; // Clear the interrupt flag
 }
@@ -192,15 +162,7 @@ float readOCXOTemperatureC() {
     return temperatureOCXO.readTemperatureC();
 }
 
-void saveState() {
-    externalEepromController.saveState(calculationController);
-}
-
-void manuallySaveState() {
-    manualSaveRequested = true;
-}
-
-void setOpMode(const OperationMode mode, const int32_t holdValue) {
+void setOpMode(const OpMode mode, const int32_t holdValue) {
     if (holdValue > 0 && holdValue <= DAC_MAX_VALUE) {
         calculationController.state().holdValue = holdValue;
     }
@@ -387,45 +349,12 @@ void setup() {
     initUserInputs();
     initEventsAndTimers();
 
-    externalEepromController.begin();
-    if (externalEepromController.loadState(calculationController)) {
-        Serial2.println(F("Loaded persisted control state from EEPROM"));
-        // Persisted state stores the actual 16-bit DAC output in `dacOut`.
-        // Ensure the hardware DAC and internal scaled accumulators are consistent.
-        calculationController.state().time = 0; // reset time so it waits for warmup
-        calculationController.resetShortTermAccumulators();
-        const uint16_t persistedDac = calculationController.state().dacOut;
-        setDacValue(persistedDac); // apply persisted visible DAC output
-        // Reconstruct internal scaled accumulators from persisted visible output
-
-        // todo not sure i really need the lines below
-
-        // calculationController.state().dacValueOut = static_cast<int32_t>(persistedDac) * calculationController.state().
-        //     timeConst;
-        // calculationController.state().dacValue = calculationController.state().dacValueOut;
-    }
-    else {
-        Serial2.println(F("No valid persisted control state found; using defaults"));
-        // Initialize DAC and controller state to a sensible mid-scale value so software state
-        // and the physical DAC are consistent. This prevents `dacOut` from remaining zero
-        // when no persisted state is available.
-        constexpr uint16_t initDac = DAC_MAX_VALUE / 2;
-        // Set controller visible/output state
-        calculationController.state().dacOut = initDac;
-        // Internal scaled accumulator/state should reflect the output multiplied by timeConst
-        calculationController.state().dacValueOut = static_cast<int32_t>(initDac) * calculationController.state().
-            timeConst;
-        calculationController.state().dacValue = calculationController.state().dacValueOut;
-        // Apply to the physical DAC
-        setDacValue(initDac);
-    }
-
     initGps();
 
     RSTCTRL.RSTFR |= RSTCTRL_WDRF_bm;
     wdt_enable(WDT_PERIOD_8KCLK_gc);
 
-    warmupEndMillis = millis() + static_cast<unsigned long>(warmupTime) * 1000UL;
+    warmupEndMillis = millis() + warmupTime * 1000UL;
 }
 
 void processGps() {
@@ -503,19 +432,18 @@ void loop() {
     lcdController.update(lcdPage);
     processGps();
     processInputs();
-    commandProcessor.process();
 
-    if (!isWarmedUp && millis() > warmupEndMillis) {
+    if (opMode == WARMUP && millis() > warmupEndMillis) {
 #ifdef DEBUG
         Serial2.println(F("Heater warm-up complete"));
 #endif
-        isWarmedUp = true;
+        opMode = RUN;
         digitalWriteFast(HEATING_LED, LOW);
     }
 
     // missed PPS
     // overflowCount will reset automatically once a PPS is received
-    if (isWarmedUp && !ppsError && overflowCount > 130) {
+    if (opMode != WARMUP && !ppsError && overflowCount > 130) {
         ppsError = true;
         digitalWriteFast(PPS_ERROR_LED, HIGH);
     }
@@ -538,13 +466,6 @@ void loop() {
             digitalWriteFast(PPS_ERROR_LED, LOW);
         }
         doCalculation();
-
-        if (manualSaveRequested && millis() - lastManualSaveMillis > 5000) {
-            saveState();
-            Serial2.println(F("Controller state manually saved to EEPROM"));
-            lastManualSaveMillis = millis();
-            manualSaveRequested = false;
-        }
     }
 
     wdt_reset();
