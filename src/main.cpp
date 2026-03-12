@@ -95,7 +95,7 @@ bool ppsError = true;
 
 
 void saveState() {
-// todo
+    // todo
 }
 
 void doCalculation() {
@@ -426,7 +426,20 @@ void processGps() {
     }
 }
 
-long currentMillis = 0;
+void processCommands() {
+    // todo temp just for setting dac value
+    if (Serial2.available() > 0) {
+        const uint16_t dacValue = Serial2.parseInt();
+        const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * 5.0f;
+        Serial2.print(F("Setting DAC value: "));
+        Serial2.print(dacValue);
+        Serial2.print(F(", Voltage: "));
+        Serial2.print(dacVoltage, 4);
+        setDacValue(dacValue);
+        calculationController.state().dacValue = dacValue;
+        calculationController.state().dacVoltage = dacVoltage;
+    }
+}
 
 void loop() {
     lcdController.update(lcdPage);

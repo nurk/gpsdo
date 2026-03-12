@@ -15,7 +15,36 @@ void CalculationController::calculate(const int32_t localTimerCounter,
                                       const int32_t localTicValue,
                                       const unsigned long lastOverflow,
                                       const OpMode mode) {
-    // TIME KEEPING
+    timeKeeping(lastOverflow);
+    timerCounterNormalization(localTimerCounter, lastOverflow);
+    ticLinearization(localTicValue);
+
+#ifdef DEBUG_CALCULATION
+    Serial2.print(F("Time: "));
+    Serial2.print(state_.time);
+    Serial2.print(F(", Timer Counter Real: "));
+    Serial2.print(state_.timerCounterValueReal);
+    Serial2.print(F(", Timer Counter Error: "));
+    Serial2.print(state_.timerCounterError);
+    Serial2.print(F(", TIC Value: "));
+    Serial2.print(state_.ticValue);
+    Serial2.print(F(", TIC Correction: "));
+    Serial2.print(state_.ticValueCorrection);
+    Serial2.print(F(", TIC Correction Offset: "));
+    Serial2.print(state_.ticValueCorrectionOffset);
+    Serial2.print(F(", TIC Corrected Net Value: "));
+    Serial2.print(state_.ticCorrectedNetValue);
+    Serial2.print(F(", DAC Voltage: "));
+    Serial2.print(state_.dacVoltage, 4);
+    Serial2.print(F(", DAC Value: "));
+    Serial2.println(state_.dacValue);
+
+#endif
+
+    updateSnapshots(localTimerCounter);
+}
+
+void CalculationController::timeKeeping(const unsigned long lastOverflow) {
     state_.time = static_cast<int32_t>(state_.time + (lastOverflow + 50) / 100);
 
     if (state_.time - state_.timeOld > 1) {
@@ -25,8 +54,10 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     else {
         state_.timeSinceMissedPps++;
     }
+}
 
-    // TIMER COUNTER
+void CalculationController::timerCounterNormalization(const int32_t localTimerCounter,
+                                                      const unsigned long lastOverflow) {
     int32_t timerCounterValueReal = localTimerCounter - state_.timerCounterValueOld;
     // wrap around detection
     if (timerCounterValueReal < -(MODULO / 2)) {
@@ -35,8 +66,9 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     state_.timerCounterValueReal = timerCounterValueReal;
     state_.timerCounterValueOld = localTimerCounter;
     state_.timerCounterError = static_cast<int32_t>(COUNTS_PER_PPS - timerCounterValueReal - lastOverflow * MODULO);
+}
 
-    // TIC LINEARIZATION
+void CalculationController::ticLinearization(const int32_t localTicValue) {
     // Polynomial linearization of tic value using a cubic correction polynomial.
     // Coefficients x2 and x3 are user-tunable; x1 is derived so that the polynomial
     // has unity gain at full scale (x1 = 1 - x2*1000 - x3*1e6, using pre-scaled coefficients).
@@ -56,24 +88,16 @@ void CalculationController::calculate(const int32_t localTimerCounter,
         - state_.x2Coefficient * 1000.0
         - state_.x3Coefficient * 100000.0;
 
-    auto linearize = [&](const int32_t tic) -> double {
-        const double s = (static_cast<double>(tic) - TIC_MIN) / (TIC_MAX - TIC_MIN) * 1000.0;
-        return s * (x1 + s * (state_.x2Coefficient + s * state_.x3Coefficient));
-    };
-    auto linearizeD = [&](const double tic) -> double {
-        const double s = (tic - TIC_MIN) / (TIC_MAX - TIC_MIN) * 1000.0;
-        return s * (x1 + s * (state_.x2Coefficient + s * state_.x3Coefficient));
+    auto linearize = [&](const double tic) -> double {
+        const double normalizedTic = (tic - TIC_MIN) / (TIC_MAX - TIC_MIN) * 1000.0;
+        return normalizedTic * (x1 + normalizedTic * (state_.x2Coefficient + normalizedTic * state_.x3Coefficient));
     };
 
-    state_.ticValueCorrectionOffset = linearizeD(state_.ticOffset);
-    state_.ticValueCorrection       = linearize(state_.ticValue);
+    state_.ticValueCorrectionOffset = linearize(state_.ticOffset);
+    // ReSharper disable once CppRedundantCastExpression
+    state_.ticValueCorrection = linearize(static_cast<double>(state_.ticValue));
     state_.ticCorrectedNetValue = state_.ticValueCorrection - state_.ticValueCorrectionOffset;
     // the expectation is that ticCorrectedNetValue is now centred on zero at ticOffset, so the PI loop can treat it as a signed error value.
-
-#ifdef DEBUG_CALCULATION
-
-
-#endif
 }
 
 void CalculationController::updateSnapshots(const int32_t localTimerCounter) {

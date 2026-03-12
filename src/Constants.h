@@ -43,6 +43,7 @@ struct GpsData {
 };
 
 struct ControlState {
+    uint16_t dacValue = DAC_MAX_VALUE / 2;
     float dacVoltage = 2.5f;
     int32_t holdValue = 0;
 

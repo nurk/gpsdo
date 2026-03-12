@@ -28,6 +28,9 @@ private:
     SaveStateFn saveState_;
     SetTCA0CountFn setTCA0Count_;
 
+    void timeKeeping(unsigned long lastOverflow);
+    void timerCounterNormalization(int32_t localTimerCounter, unsigned long lastOverflow);
+    void ticLinearization(int32_t localTicValue);
     void updateSnapshots(int32_t localTimerCounter);
 };
 
