@@ -67,6 +67,7 @@ struct ControlState {
     double ticValueCorrectionOffset = 0.0; // linearized value at ticOffset (zero reference)
     double ticCorrectedNetValue = 0.0; // ticValueCorrection - ticValueCorrectionOffset
     double ticCorrectedNetValueFiltered = 0.0;
+    double ticFrequencyError = 0.0;
     bool ticFilterSeeded = false;       // true after the EMA has been seeded with the first real measurement
     int32_t ticFilterConst = 16;
 

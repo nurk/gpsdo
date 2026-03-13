@@ -99,6 +99,7 @@ ticValueCorrectionOld       double     — linearised TIC last PPS (snapshot)
 ticValueCorrectionOffset    double     — linearise(ticOffset) — zero reference
 ticCorrectedNetValue        double     — ticValueCorrection - ticValueCorrectionOffset (phase error)
 ticCorrectedNetValueFiltered double    — EMA-filtered phase error (input to I-term)
+ticFrequencyError           double     — ticValueCorrection - ticValueCorrectionOld (rate of phase change, ns/s)
 ticFilterSeeded             bool       — false until first real value seeds the EMA
 isFirstTic                  bool       — true until tick 1 has seeded all *Old snapshots; skips all calculations on tick 1
 ticFilterConst              int32_t    — EMA time constant in seconds (default 16)
@@ -119,6 +120,8 @@ calculate()
   ├── ticLinearization()         — cubic polynomial, produce ticCorrectedNetValue
   ├── ticPreFilter()             — EMA on ticCorrectedNetValue → ticCorrectedNetValueFiltered
   │                                Seeds on first tick; skips EMA until ticFilterSeeded == true
+  ├── computeFrequencyError()    — ticFrequencyError = ticValueCorrection - ticValueCorrectionOld
+  │                                Guarded by ticFilterSeeded (skipped on tick 2 before Old is valid)
   └── updateSnapshots()          — copy current values to *Old fields
 ```
 
@@ -156,6 +159,24 @@ but not yet used inside it — the PI loop will gate on `mode == RUN`.
   pairs (e.g. +8/−6 at T637/638, +7/−4 at T702/703) — GPS PPS jitter/latency,
   not a software bug. ✅
 
+### log 2026-03-13-run4.log
+- `ticFrequencyError` implementation verified: arithmetic confirmed as
+  `ticValueCorrection[N] − ticValueCorrection[N−1]` for multiple ticks. ✅
+  - T9→T10: `720.84 − 18.32 = 702.52` ✅
+  - T10→T11: `497.50 − 720.84 = −223.34` ✅
+  - T107→T108: `790.21 − 66.83 = 723.38` (logged 723.39, rounding only) ✅
+- Guard clause (`ticFilterSeeded`) prevents premature computation on tick 2. ✅
+- `ticFrequencyError` correctly alternates between large positive spikes (~700)
+  at TIC sawtooth wrap-arounds and steady negative steps (~−165 to −242) within
+  each sawtooth ramp — **this is expected behaviour** for an undisciplined OCXO.
+  The spikes are real TIC phase resets, not software bugs.
+- Steady-state drift between resets is approximately −170 to −200 counts/s,
+  consistent with ~170–200 ppb free-running offset seen in run3. ✅
+- DAC fixed at 29 000 / 2.2126 V (no loop, WARMUP mode throughout). ✅
+- ⚠️ Note: `ticFrequencyError` is computed from the raw linearised correction
+  (before offset subtraction), so wrap-around spikes will appear in the P-term
+  unless explicitly handled when the PI loop is implemented.
+
 ---
 
 ## Next implementation steps (ordered)
@@ -164,14 +185,9 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 
 ### ~~Step 1 — TIC pre-filter~~ ✅ Done (validated in run3.log)
 
-### Step 2 — Frequency error (`ticFrequencyError`) ← current step
-- Add `double ticFrequencyError` to `ControlState`.
-- Compute in a new private method `computeFrequencyError()`:
-  `ticFrequencyError = ticValueCorrection - ticValueCorrectionOld`
-- Guard with `ticFilterSeeded` (skip on first tick when `ticValueCorrectionOld` is 0).
-- Log it. Expect a small near-constant ppb value for an undisciplined OCXO.
+### ~~Step 2 — Frequency error (`ticFrequencyError`)~~ ✅ Done (validated in run4.log)
 
-### Step 3 — PI control loop
+### Step 3 — PI control loop ← current step
 - Add to `ControlState`: `iAccumulator` (double), `iRemainder` (double),
   `timeConst` (int32_t, default 32), `gain` (double, default 12.0),
   `damping` (double, default 3.0).

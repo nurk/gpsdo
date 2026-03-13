@@ -27,30 +27,33 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     timerCounterNormalization(localTimerCounter, lastOverflow);
     ticLinearization(localTicValue);
     ticPreFilter();
+    computeFrequencyError();
 
 #ifdef DEBUG_CALCULATION
-        Serial2.print(F("Time: "));
-        Serial2.print(state_.time);
-        Serial2.print(F(", Timer Counter Real: "));
-        Serial2.print(state_.timerCounterValueReal);
-        Serial2.print(F(", Timer Counter Error: "));
-        Serial2.print(state_.timerCounterError);
-        Serial2.print(F(", TIC Value: "));
-        Serial2.print(state_.ticValue);
-        Serial2.print(F(", TIC Correction: "));
-        Serial2.print(state_.ticValueCorrection);
-        Serial2.print(F(", TIC Correction Offset: "));
-        Serial2.print(state_.ticValueCorrectionOffset);
-        Serial2.print(F(", TIC Corrected Net Value: "));
-        Serial2.print(state_.ticCorrectedNetValue);
-        Serial2.print(F(", TIC Corrected Net Value Filtered: "));
-        Serial2.print(state_.ticCorrectedNetValueFiltered);
-        Serial2.print(F(", DAC Voltage: "));
-        Serial2.print(state_.dacVoltage, 4);
-        Serial2.print(F(", DAC Value: "));
-        Serial2.print(state_.dacValue);
-        Serial2.print(F(", Mode: "));
-        Serial2.println(mode);
+    Serial2.print(F("Time: "));
+    Serial2.print(state_.time);
+    Serial2.print(F(", Timer Counter Real: "));
+    Serial2.print(state_.timerCounterValueReal);
+    Serial2.print(F(", Timer Counter Error: "));
+    Serial2.print(state_.timerCounterError);
+    Serial2.print(F(", TIC Value: "));
+    Serial2.print(state_.ticValue);
+    Serial2.print(F(", TIC Correction: "));
+    Serial2.print(state_.ticValueCorrection);
+    Serial2.print(F(", TIC Correction Offset: "));
+    Serial2.print(state_.ticValueCorrectionOffset);
+    Serial2.print(F(", TIC Corrected Net Value: "));
+    Serial2.print(state_.ticCorrectedNetValue);
+    Serial2.print(F(", TIC Corrected Net Value Filtered: "));
+    Serial2.print(state_.ticCorrectedNetValueFiltered);
+    Serial2.print(F(", TIC Frequency Error: "));
+    Serial2.print(state_.ticFrequencyError);
+    Serial2.print(F(", DAC Voltage: "));
+    Serial2.print(state_.dacVoltage, 4);
+    Serial2.print(F(", DAC Value: "));
+    Serial2.print(state_.dacValue);
+    Serial2.print(F(", Mode: "));
+    Serial2.println(mode);
 
 #endif
 
@@ -126,6 +129,12 @@ void CalculationController::ticPreFilter() {
     state_.ticCorrectedNetValueFiltered +=
         (state_.ticCorrectedNetValue - state_.ticCorrectedNetValueFiltered) / static_cast<double>(state_.
             ticFilterConst);
+}
+
+void CalculationController::computeFrequencyError() {
+    if (state_.ticFilterSeeded) {
+        state_.ticFrequencyError = state_.ticValueCorrection - state_.ticValueCorrectionOld;
+    }
 }
 
 void CalculationController::updateSnapshots(const int32_t localTimerCounter) {

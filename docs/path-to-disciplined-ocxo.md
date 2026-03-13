@@ -17,7 +17,7 @@ GPS-disciplined OCXO.
 
 ---
 
-## Step 1 — TIC pre-filter (EMA low-pass on phase error)
+## ~~Step 1 — TIC pre-filter (EMA low-pass on phase error)~~ ✅ Done (validated in run3.log)
 
 ### Why
 
@@ -54,7 +54,7 @@ smoothly, with the cycle-to-cycle noise removed.
 
 ---
 
-## Step 2 — Frequency error term (`diff`)
+## ~~Step 2 — Frequency error term (`diff`)~~ ✅ Done (validated in run4.log)
 
 ### Why
 
