@@ -9,6 +9,7 @@ CalculationController::CalculationController(const SetDacFn setDac,
       readTemp_(readTemp),
       saveState_(saveState),
       setTCA0Count_(setTCA0Count) {
+    state_ = ControlState();
 }
 
 void CalculationController::calculate(const int32_t localTimerCounter,
@@ -37,7 +38,9 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(F(", DAC Voltage: "));
     Serial2.print(state_.dacVoltage, 4);
     Serial2.print(F(", DAC Value: "));
-    Serial2.println(state_.dacValue);
+    Serial2.print(state_.dacValue);
+    Serial2.print(F(", Mode: "));
+    Serial2.println(mode);
 
 #endif
 

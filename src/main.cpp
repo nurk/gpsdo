@@ -266,7 +266,13 @@ void initI2CDevices() {
     else {
         Serial2.println(F("DAC initialized successfully"));
     }
-    dac.write(DAC_MAX_VALUE / 2);
+
+    // todo temp
+    int dacValue = 29000;
+    calculationController.state().dacValue = dacValue;
+    const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * 5.0f;;
+    calculationController.state().dacVoltage = dacVoltage;
+    setDacValue(dacValue);
 }
 
 void initUserInputs() {
@@ -438,13 +444,19 @@ void processCommands() {
         setDacValue(dacValue);
         calculationController.state().dacValue = dacValue;
         calculationController.state().dacVoltage = dacVoltage;
+
+        while (Serial2.available() > 0) {
+            Serial2.read(); // flush rest of line
+        }
     }
 }
 
 void loop() {
+    lcdController.setOpMode(opMode);
     lcdController.update(lcdPage);
     processGps();
     processInputs();
+    processCommands();
 
     if (opMode == WARMUP && millis() > warmupEndMillis) {
 #ifdef DEBUG
