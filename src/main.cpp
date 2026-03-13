@@ -266,13 +266,6 @@ void initI2CDevices() {
     else {
         Serial2.println(F("DAC initialized successfully"));
     }
-
-    // todo temp
-    int dacValue = 29000;
-    calculationController.state().dacValue = dacValue;
-    const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * 5.0f;;
-    calculationController.state().dacVoltage = dacVoltage;
-    setDacValue(dacValue);
 }
 
 void initUserInputs() {
@@ -361,6 +354,13 @@ void setup() {
     wdt_enable(WDT_PERIOD_8KCLK_gc);
 
     warmupEndMillis = millis() + warmupTime * 1000UL;
+
+    // todo temp
+    int dacValue = 29000;
+    calculationController.state().dacValue = dacValue;
+    const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * 5.0f;;
+    calculationController.state().dacVoltage = dacVoltage;
+    setDacValue(dacValue);
 }
 
 void processGps() {
@@ -435,15 +435,18 @@ void processGps() {
 void processCommands() {
     // todo temp just for setting dac value
     if (Serial2.available() > 0) {
-        const uint16_t dacValue = Serial2.parseInt();
-        const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * 5.0f;
-        Serial2.print(F("Setting DAC value: "));
-        Serial2.print(dacValue);
-        Serial2.print(F(", Voltage: "));
-        Serial2.print(dacVoltage, 4);
-        setDacValue(dacValue);
-        calculationController.state().dacValue = dacValue;
-        calculationController.state().dacVoltage = dacVoltage;
+        const int read = Serial2.read();
+        if (read == 'd') {
+            const uint16_t dacValue = Serial2.parseInt();
+            const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * 5.0f;
+            Serial2.print(F("Setting DAC value: "));
+            Serial2.print(dacValue);
+            Serial2.print(F(", Voltage: "));
+            Serial2.print(dacVoltage, 4);
+            setDacValue(dacValue);
+            calculationController.state().dacValue = dacValue;
+            calculationController.state().dacVoltage = dacVoltage;
+        }
 
         while (Serial2.available() > 0) {
             Serial2.read(); // flush rest of line
