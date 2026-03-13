@@ -44,6 +44,8 @@ struct GpsData {
 };
 
 struct ControlState {
+    bool isFirstTic = true;             // true until the first PPS tick has been used to seed *Old snapshots
+
     uint16_t dacValue = DAC_MAX_VALUE / 2;
     float dacVoltage = static_cast<float>(DAC_MAX_VALUE) * 0.5f / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
     int32_t holdValue = 0;
@@ -65,7 +67,7 @@ struct ControlState {
     double ticValueCorrectionOffset = 0.0; // linearized value at ticOffset (zero reference)
     double ticCorrectedNetValue = 0.0; // ticValueCorrection - ticValueCorrectionOffset
     double ticCorrectedNetValueFiltered = 0.0;
-    bool ticFilterSeeded = false;
+    bool ticFilterSeeded = false;       // true after the EMA has been seeded with the first real measurement
     int32_t ticFilterConst = 16;
 
     double ticOffset = 500.0; // expected centre of TIC range (counts)

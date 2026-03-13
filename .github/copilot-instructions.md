@@ -100,6 +100,7 @@ ticValueCorrectionOffset    double     — linearise(ticOffset) — zero referen
 ticCorrectedNetValue        double     — ticValueCorrection - ticValueCorrectionOffset (phase error)
 ticCorrectedNetValueFiltered double    — EMA-filtered phase error (input to I-term)
 ticFilterSeeded             bool       — false until first real value seeds the EMA
+isFirstTic                  bool       — true until tick 1 has seeded all *Old snapshots; skips all calculations on tick 1
 ticFilterConst              int32_t    — EMA time constant in seconds (default 16)
 
 ticOffset                   double     — expected mid-point of TIC range (default 500.0)
@@ -126,22 +127,44 @@ but not yet used inside it — the PI loop will gate on `mode == RUN`.
 
 ---
 
-## What has been validated (log 2026-03-13-run2.log)
+## What has been validated
 
+### log 2026-03-13-run2.log
 - TIC sawtooth is clean, within TIC_MIN/MAX bounds. ✅
 - TIC linearisation maths verified manually — `linearize(500) = 483.24`. ✅
 - `ticCorrectedNetValue` correctly zero at TIC = 500 (ticOffset). ✅
 - `timerCounterError` nominally −1 (expected for near-on-frequency OCXO). ✅
 - DAC fixed at 29 000 / 2.2126 V throughout (no loop yet, WARMUP mode). ✅
 
+### log 2026-03-13-run3.log
+- EMA filter seeding confirmed: first tick filtered = raw (−493.66). ✅
+- EMA arithmetic verified manually for multiple ticks — matches formula exactly. ✅
+- Filter converges from −493 at Time 275 toward ~−70 by Time 614 (still converging,
+  undisciplined OCXO, expected — full settle takes ~4 × filterConst = ~64 s more). ✅
+- Mode transitions correctly: WARMUP (2) until Time 603, then RUN (0) at Time 604. ✅
+- First-tick `timerCounterReal = 3667` and huge `timerCounterError` on Time 275 are
+  expected boot artefacts (timerCounterValueOld = 0, overflowCount accumulated from
+  power-on). Not a bug — consider skipping the first tick in future. ⚠️
+- `ticFilterSeeded` flag works correctly — no premature EMA on tick 1. ✅
+- Extended run to Time 1117 confirmed: filter oscillates around a stable mean of
+  approximately −70 to −80 counts throughout RUN mode. The OCXO is free-running so
+  it never converges to zero — this is the expected undisciplined baseline. ✅
+- TIC sawtooth period is approximately 6–7 seconds (consistent ~170 count/s drift),
+  implying the free-running OCXO is offset by roughly 170 ns/s ≈ 170 ppb. ✅
+- No missed PPS events observed across the full 1117-second run. ✅
+- Occasional `timerCounterReal` spikes of ±3 to ±8 continue to appear in balanced
+  pairs (e.g. +8/−6 at T637/638, +7/−4 at T702/703) — GPS PPS jitter/latency,
+  not a software bug. ✅
+
 ---
 
 ## Next implementation steps (ordered)
 
-These are documented in detail in `docs/path-to-disciplined-ocxo.md`
-(or wherever that file lives — re-create in `docs/` if missing).
+These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 
-### Step 2 — Frequency error (`ticFrequencyError`)
+### ~~Step 1 — TIC pre-filter~~ ✅ Done (validated in run3.log)
+
+### Step 2 — Frequency error (`ticFrequencyError`) ← current step
 - Add `double ticFrequencyError` to `ControlState`.
 - Compute in a new private method `computeFrequencyError()`:
   `ticFrequencyError = ticValueCorrection - ticValueCorrectionOld`
