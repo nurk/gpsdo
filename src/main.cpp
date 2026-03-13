@@ -113,7 +113,7 @@ void doCalculation() {
     calculationController.calculate(localTimerCounter, localTicValue, localLastOverflow, opMode);
 }
 
-// Overflow interrupt for TCA0 - 5MHz pulse counter
+// Overflow interrupt for TCA0 - counts the 5 MHz signal derived from the 10 MHz OCXO (divided by 2)
 ISR(TCA0_OVF_vect) {
     overflowCount++;
     TCA0.SINGLE.INTFLAGS = TCA_SINGLE_OVF_bm; // Clear the overflow interrupt flag
@@ -278,11 +278,11 @@ void initUserInputs() {
 }
 
 void initEventsAndTimers() {
-    // Configure Event System Channel 0: PA5 (5MHz) -> TCA0
+    // Configure Event System Channel 0: PA5 (5 MHz, derived from 10 MHz OCXO / 2) -> TCA0
     EVSYS.CHANNEL0 = EVSYS_GENERATOR_PORT0_PIN5_gc; // Route PA5 to Event Channel 0
     EVSYS.USERTCA0 = EVSYS_CHANNEL_CHANNEL0_gc; // Connect Channel 0 to TCA0
 
-    // Configure TCA0 as event counter for 5MHz pulses
+    // Configure TCA0 as event counter for the 5 MHz divided OCXO signal
     TCA0.SINGLE.CTRLA = 0; // Disable TCA0 for configuration
     TCA0.SINGLE.CTRLD &= ~TCA_SINGLE_SPLITM_bm; // Ensure single mode (not split)
     TCA0.SINGLE.CTRLB = TCA_SINGLE_WGMODE_NORMAL_gc; // Set normal waveform generation mode
@@ -358,7 +358,7 @@ void setup() {
     // todo temp
     int dacValue = 29000;
     calculationController.state().dacValue = dacValue;
-    const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * 5.0f;;
+    const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * DAC_VREF;;
     calculationController.state().dacVoltage = dacVoltage;
     setDacValue(dacValue);
 }
@@ -438,7 +438,7 @@ void processCommands() {
         const int read = Serial2.read();
         if (read == 'd') {
             const uint16_t dacValue = Serial2.parseInt();
-            const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * 5.0f;
+            const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * DAC_VREF;
             Serial2.print(F("Setting DAC value: "));
             Serial2.print(dacValue);
             Serial2.print(F(", Voltage: "));

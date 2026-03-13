@@ -31,6 +31,7 @@ private:
     void timeKeeping(unsigned long lastOverflow);
     void timerCounterNormalization(int32_t localTimerCounter, unsigned long lastOverflow);
     void ticLinearization(int32_t localTicValue);
+    void ticPreFilter();
     void updateSnapshots(int32_t localTimerCounter);
 };
 

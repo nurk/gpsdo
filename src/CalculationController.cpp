@@ -19,6 +19,7 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     timeKeeping(lastOverflow);
     timerCounterNormalization(localTimerCounter, lastOverflow);
     ticLinearization(localTicValue);
+    ticPreFilter();
 
 #ifdef DEBUG_CALCULATION
     Serial2.print(F("Time: "));
@@ -35,6 +36,8 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(state_.ticValueCorrectionOffset);
     Serial2.print(F(", TIC Corrected Net Value: "));
     Serial2.print(state_.ticCorrectedNetValue);
+    Serial2.print(F(", TIC Corrected Net Value Filtered: "));
+    Serial2.print(state_.ticCorrectedNetValueFiltered);
     Serial2.print(F(", DAC Voltage: "));
     Serial2.print(state_.dacVoltage, 4);
     Serial2.print(F(", DAC Value: "));
@@ -101,6 +104,20 @@ void CalculationController::ticLinearization(const int32_t localTicValue) {
     state_.ticValueCorrection = linearize(static_cast<double>(state_.ticValue));
     state_.ticCorrectedNetValue = state_.ticValueCorrection - state_.ticValueCorrectionOffset;
     // the expectation is that ticCorrectedNetValue is now centred on zero at ticOffset, so the PI loop can treat it as a signed error value.
+}
+
+void CalculationController::ticPreFilter() {
+    if (!state_.ticFilterSeeded) {
+        state_.ticCorrectedNetValueFiltered = state_.ticCorrectedNetValue;
+        state_.ticFilterSeeded = true;
+        return;
+    }
+
+    // EMA: filtered += (raw - filtered) / filterConst
+    // A natural lock detector follows: once abs(filtered) stays below a
+    // threshold for N * filterConst consecutive seconds, the loop is locked.
+    state_.ticCorrectedNetValueFiltered +=
+        (state_.ticCorrectedNetValue - state_.ticCorrectedNetValueFiltered) / static_cast<double>(state_.ticFilterConst);
 }
 
 void CalculationController::updateSnapshots(const int32_t localTimerCounter) {

@@ -11,6 +11,7 @@ enum OpMode {
 };
 
 constexpr uint16_t DAC_MAX_VALUE = 65535;
+constexpr float DAC_VREF = 5.0f; // REF5050 reference voltage (V)
 constexpr uint16_t WARMUP_TIME_DEFAULT = 600; // seconds
 
 using SetWarmupTimeFn = void(*)(uint16_t seconds);
@@ -44,7 +45,7 @@ struct GpsData {
 
 struct ControlState {
     uint16_t dacValue = DAC_MAX_VALUE / 2;
-    float dacVoltage = 2.5f;
+    float dacVoltage = static_cast<float>(DAC_MAX_VALUE) * 0.5f / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
     int32_t holdValue = 0;
 
     int32_t timerCounterValueOld = 0;
@@ -59,20 +60,23 @@ struct ControlState {
 
     int32_t ticValue = 0;
     int32_t ticValueOld = 0;
-    double ticValueCorrection = 0.0;    // linearized tic (raw)
+    double ticValueCorrection = 0.0; // linearized tic (raw)
     double ticValueCorrectionOld = 0.0;
     double ticValueCorrectionOffset = 0.0; // linearized value at ticOffset (zero reference)
-    double ticCorrectedNetValue = 0.0;      // ticValueCorrection - ticValueCorrectionOffset
+    double ticCorrectedNetValue = 0.0; // ticValueCorrection - ticValueCorrectionOffset
+    double ticCorrectedNetValueFiltered = 0.0;
+    bool ticFilterSeeded = false;
+    int32_t ticFilterConst = 16;
 
-    double ticOffset = 500.0;            // expected centre of TIC range (counts)
+    double ticOffset = 500.0; // expected centre of TIC range (counts)
     // Polynomial coefficients for TIC linearization.
     // The polynomial is evaluated on a normalised input x = (tic - TIC_MIN) / (TIC_MAX - TIC_MIN) * 1000
     // using Horner form:  x*(a1 + x*(a2 + x*a3))
     // x1 is derived: x1 = 1 - x2 - x3  (ensures unity gain at full scale)
     // x2 and x3 are the quadratic and cubic correction terms.
     // Pre-scale x2 by 1/1000 and x3 by 1/100000 when storing so no runtime division is needed.
-    double x2Coefficient = 1.0e-4;     // quadratic term  (= 0.1 / 1000)
-    double x3Coefficient = 3.0e-7;     // cubic term      (= 0.03 / 100000)
+    double x2Coefficient = 1.0e-4; // quadratic term  (= 0.1 / 1000)
+    double x3Coefficient = 3.0e-7; // cubic term      (= 0.03 / 100000)
 };
 
 constexpr int32_t COUNTS_PER_PPS = 5000000;
