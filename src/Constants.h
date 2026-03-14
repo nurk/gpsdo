@@ -108,4 +108,10 @@ constexpr double TIC_MAX = 1012.0;
 // Unlock occurs immediately when the filtered error exceeds UNLOCK_THRESHOLD (hysteresis).
 constexpr double LOCK_THRESHOLD   = 50.0;   // filtered phase error must stay within ±50 counts to declare lock
 constexpr double UNLOCK_THRESHOLD = 100.0;  // filtered phase error must exceed ±100 counts to declare unlock
+
+// Maximum P-term contribution in DAC counts per tick.
+// The raw TIC sawtooth spans ~500 counts/s × gain 12 = ~6000 counts, which would
+// slam the DAC on every wrap. Clamping to ±2000 limits the kick while still
+// providing meaningful frequency-error damping.
+constexpr double PTERM_MAX_COUNTS = 2000.0;
 #endif //GPSDO_V1_0_CONSTANTS_H

@@ -72,6 +72,9 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `TIC_MIN` | 12.0 | Minimum valid raw TIC ADC count |
 | `TIC_MAX` | 1012.0 | Maximum valid raw TIC ADC count |
 | `WARMUP_TIME_DEFAULT` | 600 s | Default OCXO warm-up time |
+| `LOCK_THRESHOLD` | 50.0 | Lock declared when `abs(filtered)` stays below this for 2×ticFilterConst s |
+| `UNLOCK_THRESHOLD` | 100.0 | Lock lost immediately when `abs(filtered)` exceeds this |
+| `PTERM_MAX_COUNTS` | 2000.0 | Maximum absolute DAC counts the P-term may contribute per tick |
 
 ---
 
@@ -99,7 +102,7 @@ ticValueCorrectionOld       double     — linearised TIC last PPS (snapshot)
 ticValueCorrectionOffset    double     — linearise(ticOffset) — zero reference
 ticCorrectedNetValue        double     — ticValueCorrection - ticValueCorrectionOffset (phase error)
 ticCorrectedNetValueFiltered double    — EMA-filtered phase error (input to I-term)
-ticFrequencyError           double     — ticValueCorrection - ticValueCorrectionOld (rate of phase change, ns/s)
+ticFrequencyError           double     — ticCorrectedNetValue - (ticValueCorrectionOld - ticValueCorrectionOffset) (rate of phase error change, ns/s)
 ticFilterSeeded             bool       — false until first real value seeds the EMA
 isFirstTic                  bool       — true until tick 1 has seeded all *Old snapshots; skips all calculations on tick 1
 ticFilterConst              int32_t    — EMA time constant in seconds (default 16)
@@ -209,7 +212,16 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 
 ### ~~Step 2 — Frequency error (`ticFrequencyError`)~~ ✅ Done (validated in run4.log)
 
-### ~~Step 3 — PI control loop~~ ✅ Done (awaiting validation run)
+### log 2026-03-14-run1.log
+- First run with PI loop closed (mode transitions WARMUP→RUN at T604). ✅
+- During WARMUP (T69–T603): DAC fixed at 32767 / 2.5000 V, iAccumulator frozen at 32767.5 — correct. ✅
+- **Bug identified**: P-term was overwhelming the output — DAC swinging between ~22000 and ~40000 every 2–3 ticks (≈1.4 V range). Root cause: raw `ticFrequencyError` of ±400–600 counts × gain 12 = ±5000–7000 DAC counts per tick. ⚠️
+- **Fix 1**: `computeFrequencyError()` now uses `ticCorrectedNetValue - (ticValueCorrectionOld - ticValueCorrectionOffset)` — the rate of change of the offset-subtracted phase error. ✅
+- **Fix 2**: P-term clamped to `±PTERM_MAX_COUNTS` (2000 counts) before being added to iAccumulator. The I-term handles long-term correction; the P-term only provides damping. ✅
+- iAccumulator was drifting slowly downward (~9 counts/tick) in RUN mode, confirming the I-term is working, but was overwhelmed by the P-term. ✅
+- lockCount briefly reached 1 on a few ticks but immediately reset — expected with an undisciplined OCXO and swinging DAC. ✅
+
+### ~~Step 3 — PI control loop~~ ✅ Done (awaiting re-validation after P-term fix)
 - Added to `ControlState`: `iAccumulator` (double, init mid-scale), `iRemainder` (double),
   `timeConst` (int32_t, default 32), `gain` (double, default 12.0),
   `damping` (double, default 3.0), `dacMinValue` / `dacMaxValue` (uint16_t, 0 / 65535).

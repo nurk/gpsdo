@@ -138,7 +138,10 @@ void CalculationController::ticPreFilter() {
 
 void CalculationController::computeFrequencyError() {
     if (state_.ticFilterSeeded) {
-        state_.ticFrequencyError = state_.ticValueCorrection - state_.ticValueCorrectionOld;
+        // Rate of change of the phase error (counts/second ≈ ns/s ≈ ppb).
+        // Uses the offset-subtracted value so the zero point is consistent with
+        // ticCorrectedNetValue and ticCorrectedNetValueFiltered.
+        state_.ticFrequencyError = state_.ticCorrectedNetValue - (state_.ticValueCorrectionOld - state_.ticValueCorrectionOffset);
     }
 }
 
@@ -150,9 +153,14 @@ void CalculationController::piLoop(const OpMode mode) {
 
     // --- P-term ---
     // Proportional to the frequency error (rate of phase change, ns/s ≈ ppb).
-    // This provides fast damping: when the frequency is drifting, the P-term
-    // pushes the DAC immediately in the right direction.
-    const double pTerm = state_.ticFrequencyError * state_.gain;
+    // This provides fast damping: when the OCXO frequency is drifting, the P-term
+    // pushes the DAC in the right direction immediately.
+    // The raw sawtooth produces frequency errors of ±400–600 counts/s, which at
+    // gain=12 would be ±5000–7000 DAC counts — far too large. Clamp to
+    // ±PTERM_MAX_COUNTS so the I-term remains in control of the long-term value.
+    double pTerm = state_.ticFrequencyError * state_.gain;
+    if (pTerm >  PTERM_MAX_COUNTS) pTerm =  PTERM_MAX_COUNTS;
+    if (pTerm < -PTERM_MAX_COUNTS) pTerm = -PTERM_MAX_COUNTS;
 
     // --- I-term (one step) ---
     // Integrates the filtered phase error toward zero over time.
