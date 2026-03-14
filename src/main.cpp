@@ -313,7 +313,7 @@ void initEventsAndTimers() {
     EVSYS.USERADC0 = EVSYS_CHANNEL_CHANNEL1_gc; // Connect Channel 1 (PPS) to ADC0 start trigger
 
     // Configure voltage reference before ADC
-    VREF.CTRLA = VREF_ADC0REFSEL_1V1_gc; // Select 1.1V internal reference
+    VREF.CTRLA = VREF_ADC0REFSEL_1V1_gc; // Select 1.1V internal reference — matches ADC_VREF in Constants.h
     VREF.CTRLB = VREF_ADC0REFEN_bm; // Enable ADC0 voltage reference
 
     // Configure ADC0 for event-triggered conversion on PDO (PD0/AIN0)

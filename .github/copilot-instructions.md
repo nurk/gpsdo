@@ -57,6 +57,7 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `src/Callbacks.h` | Forward declarations for callback functions wired in main |
 | `archive/OriginalCode.cpp` | Read-only legacy reference — do not edit |
 | `docs/` | Architecture, todo list, migration notes, EEPROM layout |
+| `docs/tic-capacitor-selection.md` | TIC capacitor (C9) analysis — X7R problems, ECHU1H102GX5 (PPS film) recommendation, C0G alternative |
 | `logs/` | Serial capture logs from real hardware runs |
 
 ---
@@ -66,7 +67,8 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | Constant | Value | Meaning |
 |---|---|---|
 | `DAC_MAX_VALUE` | 65535 | 16-bit DAC full scale |
-| `DAC_VREF` | 5.0 V | REF5050 voltage reference |
+| `DAC_VREF` | 5.0 V | REF5050 voltage reference for the DAC |
+| `ADC_VREF` | 1.1 V | ATmega4808 internal reference for the TIC ADC |
 | `COUNTS_PER_PPS` | 5 000 000 | Expected TCA0 counts per GPS PPS (10 MHz OCXO ÷ 2 = 5 MHz counter) |
 | `MODULO` | 50 000 | TCA0 counter period (overflows at 50 000) |
 | `TIC_MIN` | 12.0 | Minimum valid raw TIC ADC count |

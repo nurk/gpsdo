@@ -11,7 +11,8 @@ enum OpMode {
 };
 
 constexpr uint16_t DAC_MAX_VALUE = 65535;
-constexpr float DAC_VREF = 5.0f; // REF5050 reference voltage (V)
+constexpr float DAC_VREF = 5.0f;  // REF5050 voltage reference for the DAC (V)
+constexpr float ADC_VREF = 1.1f;  // ATmega4808 internal reference for the TIC ADC (V)
 constexpr uint16_t WARMUP_TIME_DEFAULT = 600; // seconds
 
 // Best-guess EFC starting point for the next power-on, in DAC counts.
