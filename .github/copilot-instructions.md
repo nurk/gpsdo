@@ -73,7 +73,7 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `TIC_MAX` | 1012.0 | Maximum valid raw TIC ADC count |
 | `WARMUP_TIME_DEFAULT` | 600 s | Default OCXO warm-up time |
 | `LOCK_THRESHOLD` | 50.0 | Lock declared when `abs(filtered)` stays below this for 2×ticFilterConst s |
-| `UNLOCK_THRESHOLD` | 100.0 | Lock lost immediately when `abs(filtered)` exceeds this |
+| `UNLOCK_THRESHOLD` | 100.0 | Lock lost immediately when `abs(filtered)` exceeds this (single tick) |
 | `PTERM_MAX_COUNTS` | 2000.0 | Maximum absolute DAC counts the P-term may contribute per tick |
 
 ---
@@ -396,7 +396,27 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - `iAccumulatorLast` field and `LOCK_INTEGRATOR_DRIFT_MAX` constant removed (dead code cleanup). ✅
 - No missed PPS events. ✅
 
-### Step 7 — Extended convergence run
+### log 2026-03-14-run9.log
+- **Run T8–T1578 (1570 seconds total).** Mode transition WARMUP→RUN at T604. ✅
+- **Temperature sensors added to log:** `Temp OCXO` (sensor below OCXO) and `Temp Board` (sensor near TIC capacitor). ✅
+- **Box removed** — hardware back in open air. OCXO steady at 30.62–30.75 °C throughout. Board at 22.25 °C. ✅
+- **LOCKED declared at T1447** (`ppsLockCount` = 32). ✅
+- `iAccumulator` converging toward ~23900 counts = 1.824 V at T1578. Slightly lower than run8 (~24182) — consistent with the same open-air ambient thermal conditions. ✅
+- Sawtooth period 11–12 ticks at end of log — still converging, not yet compressed. ✅
+- Mean `ticCorrectedNetValueFiltered` over last 130 ticks: −15.6 counts → mean I-step −1.95/tick. Still drifting slowly downward. ✅
+- No missed PPS events. ✅
+- **Unlock bug identified:** single-tick immediate unlock fires on TIC sawtooth peaks brushing ±100 counts, resetting the 32-second re-lock counter unnecessarily. ⚠️ (fix reverted — kept as single-tick unlock for now)
+
+### Step 6 — Validate and tune (running summary)
+- run2.log: ✅ First lock at T1179.
+- run4.log: Anti-windup bug fixed.
+- run5.log: P-term clamp 2000→200 (then restored — see run6).
+- run6.log: P-term source changed `ticFrequencyError`→`ticDelta`. `PTERM_MAX_COUNTS` restored to 2000.
+- run7.log: iDrift guard removed from `lockDetection()`.
+- run8.log: ✅ First lock with all fixes in place. T1371.
+- run9.log: Temperature sensors added. Unlock hysteresis fix attempted but reverted — kept as single-tick unlock.
+- If the loop oscillates: increase `damping` or `timeConst`.
+- If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
 - Run for 8000–10000 seconds total (ideally until `iAccumulator` stabilises and TIC sawtooth compresses to ≪100 counts peak-to-peak).
 - The run3 setpoint appears to be somewhere below ~7700 counts (~0.59 V) — needs more data.
 - Watch for sawtooth period increasing (means OCXO is closer to on-frequency and drift rate is falling).
