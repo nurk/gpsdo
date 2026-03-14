@@ -28,6 +28,7 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     ticPreFilter();
     computeFrequencyError();
     piLoop(mode);
+    lockDetection(mode);
 
 #ifdef DEBUG_CALCULATION
     Serial2.print(F("Time: "));
@@ -49,7 +50,9 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(F(", TIC Frequency Error: "));
     Serial2.print(state_.ticFrequencyError);
     Serial2.print(F(", I Accumulator: "));
-    Serial2.print(state_.iAccumulator, 2);
+    Serial2.print(state_.iAccumulator, 4);
+    Serial2.print(F(", PPS Lock count: "));
+    Serial2.print(state_.ppsLockCount);
     Serial2.print(F(", DAC Voltage: "));
     Serial2.print(state_.dacVoltage, 4);
     Serial2.print(F(", DAC Value: "));
@@ -156,12 +159,12 @@ void CalculationController::piLoop(const OpMode mode) {
     // Dividing by damping * timeConst makes the integrator slow and stable.
     // The remainder from the previous tick is added back to avoid truncation drift.
     const double iStep = (state_.ticCorrectedNetValueFiltered * state_.gain
-                          / static_cast<double>(state_.damping)
-                          / static_cast<double>(state_.timeConst))
-                         + state_.iRemainder;
+            / static_cast<double>(state_.damping)
+            / static_cast<double>(state_.timeConst))
+        + state_.iRemainder;
 
     const double iStepFloor = floor(iStep);
-    state_.iRemainder = iStep - iStepFloor;   // carry the fractional part forward
+    state_.iRemainder = iStep - iStepFloor; // carry the fractional part forward
     state_.iAccumulator += iStepFloor;
 
     // --- Clamp accumulator to prevent integrator wind-up ---
@@ -180,10 +183,12 @@ void CalculationController::piLoop(const OpMode mode) {
     const double dacOutput = state_.iAccumulator + pTerm;
 
     // --- Clamp to DAC limits and write ---
-    const uint16_t dacClamped = static_cast<uint16_t>(
-        dacOutput < static_cast<double>(state_.dacMinValue) ? static_cast<double>(state_.dacMinValue) :
-        dacOutput > static_cast<double>(state_.dacMaxValue) ? static_cast<double>(state_.dacMaxValue) :
-        dacOutput);
+    const auto dacClamped = static_cast<uint16_t>(
+        dacOutput < static_cast<double>(state_.dacMinValue)
+            ? static_cast<double>(state_.dacMinValue)
+            : dacOutput > static_cast<double>(state_.dacMaxValue)
+            ? static_cast<double>(state_.dacMaxValue)
+            : dacOutput);
 
     state_.dacValue = dacClamped;
     state_.dacVoltage = static_cast<float>(dacClamped) / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
@@ -191,7 +196,46 @@ void CalculationController::piLoop(const OpMode mode) {
 }
 
 void CalculationController::lockDetection(const OpMode mode) {
+    // Lock is only meaningful while the PI loop is running.
+    if (mode != RUN) {
+        state_.ppsLocked = false;
+        state_.ppsLockCount = 0;
+        return;
+    }
 
+    const double absFiltered = abs(state_.ticCorrectedNetValueFiltered);
+
+    if (state_.ppsLocked) {
+        // Already locked — unlock immediately if the filtered error exceeds the unlock threshold.
+        if (absFiltered > UNLOCK_THRESHOLD) {
+            state_.ppsLocked = false;
+            state_.ppsLockCount = 0;
+
+#ifdef DEBUG_CALCULATION
+            Serial2.println(F("LOCK LOST"));
+#endif
+        }
+    }
+    else {
+        // Not yet locked — count consecutive seconds inside the lock threshold.
+        if (absFiltered < LOCK_THRESHOLD) {
+            state_.ppsLockCount++;
+
+            // Require 2 × ticFilterConst consecutive seconds before declaring lock.
+            // This ensures the EMA has fully settled before we call it locked.
+            if (state_.ppsLockCount >= state_.ticFilterConst * 2) {
+                state_.ppsLocked = true;
+
+#ifdef DEBUG_CALCULATION
+                Serial2.println(F("LOCKED"));
+#endif
+            }
+        }
+        else {
+            // Any excursion outside the threshold resets the counter.
+            state_.ppsLockCount = 0;
+        }
+    }
 }
 
 void CalculationController::updateSnapshots(const int32_t localTimerCounter) {

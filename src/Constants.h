@@ -82,6 +82,10 @@ struct ControlState {
     uint16_t dacMinValue = 0;
     uint16_t dacMaxValue = DAC_MAX_VALUE;
 
+    // --- PPS Locked ---
+    bool ppsLocked = false;
+    int32_t ppsLockCount = 0;  // consecutive seconds within LOCK_THRESHOLD; lock declared at 2 × ticFilterConst
+
     double ticOffset = 500.0; // expected centre of TIC range (counts)
     // Polynomial coefficients for TIC linearization.
     // The polynomial is evaluated on a normalised input x = (tic - TIC_MIN) / (TIC_MAX - TIC_MIN) * 1000
@@ -98,4 +102,10 @@ constexpr int32_t MODULO = 50000;
 
 constexpr double TIC_MIN = 12.0;
 constexpr double TIC_MAX = 1012.0;
+
+// Lock detection thresholds (in linearised TIC counts, same units as ticCorrectedNetValueFiltered)
+// Lock is declared after LOCK_COUNT_THRESHOLD consecutive seconds below LOCK_THRESHOLD.
+// Unlock occurs immediately when the filtered error exceeds UNLOCK_THRESHOLD (hysteresis).
+constexpr double LOCK_THRESHOLD   = 50.0;   // filtered phase error must stay within ±50 counts to declare lock
+constexpr double UNLOCK_THRESHOLD = 100.0;  // filtered phase error must exceed ±100 counts to declare unlock
 #endif //GPSDO_V1_0_CONSTANTS_H

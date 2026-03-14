@@ -113,6 +113,9 @@ damping                     double     — P/I ratio; higher = more damped, slow
 dacMinValue                 uint16_t   — lower DAC safety limit (default 0)
 dacMaxValue                 uint16_t   — upper DAC safety limit (default 65535)
 
+ppsLocked                   bool       — true when loop has been locked for ≥ 2×ticFilterConst consecutive seconds
+ppsLockCount                int32_t    — consecutive seconds within LOCK_THRESHOLD; resets on any excursion
+
 ticOffset                   double     — expected mid-point of TIC range (default 500.0)
 x2Coefficient               double     — quadratic linearisation coeff (stored pre-scaled /1000)
 x3Coefficient               double     — cubic linearisation coeff (stored pre-scaled /100000)
@@ -136,11 +139,16 @@ calculate()
   │                                I-step = ticCorrectedNetValueFiltered * gain / damping / timeConst
   │                                iAccumulator clamped to [dacMinValue, dacMaxValue]
   │                                dacOutput = iAccumulator + pTerm, clamped, written via setDac_()
+  ├── lockDetection(mode)        — only active when mode == RUN
+  │                                Counts consecutive seconds where abs(ticCorrectedNetValueFiltered) < LOCK_THRESHOLD (50)
+  │                                Declares lock after lockCount ≥ 2 × ticFilterConst
+  │                                Declares unlock immediately when abs > UNLOCK_THRESHOLD (100)
+  │                                Resets ppsLocked and lockCount when leaving RUN mode
+  │                                Drives LOCK_LED via ppsLocked (written in main loop)
   └── updateSnapshots()          — copy current values to *Old fields
 ```
 
-The `mode` parameter (`RUN` / `HOLD` / `WARMUP`) is passed to `calculate()`
-but not yet used inside it — the PI loop will gate on `mode == RUN`.
+The `mode` parameter (`RUN` / `HOLD` / `WARMUP`) gates both `piLoop()` and `lockDetection()` — both are no-ops unless `mode == RUN`.
 
 ---
 
@@ -216,10 +224,20 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - `dacMinValue` / `dacMaxValue` added to `ControlState` (defaults 0 / 65535).
 - Every DAC write in `piLoop()` is clamped to these limits.
 
-### Step 5 — Validate and tune
+### ~~Step 5 — Lock detection~~ ✅ Done (awaiting validation run)
+- Added to `ControlState`: `ppsLocked` (bool), `lockCount` (int32_t).
+- Added to `Constants.h`: `LOCK_THRESHOLD` (50.0), `UNLOCK_THRESHOLD` (100.0).
+- Private method `lockDetection(OpMode mode)` implemented in `CalculationController`.
+- Resets `ppsLocked` / `lockCount` when mode is not `RUN`.
+- Requires `lockCount ≥ 2 × ticFilterConst` consecutive seconds below `LOCK_THRESHOLD` to declare lock.
+- Unlocks immediately when `abs(ticCorrectedNetValueFiltered) > UNLOCK_THRESHOLD`.
+- `LOCK_LED` is driven from `ppsLocked` in the main loop after each PPS event.
+
+### Step 6 — Validate and tune
 - Flash firmware and run with loop closed (mode transitions to RUN after warmup).
 - Watch `iAccumulator` in the log: it should drift slowly toward the correct DAC value.
 - Watch `ticCorrectedNetValue` sawtooth compress over time.
+- Watch for "LOCKED" message in the debug log after convergence.
 - If the loop oscillates: increase `damping` or `timeConst`.
 - If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
 

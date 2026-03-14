@@ -356,7 +356,7 @@ void setup() {
     warmupEndMillis = millis() + warmupTime * 1000UL;
 
     // todo temp
-    int dacValue = 29000;
+    int dacValue = DAC_MAX_VALUE / 2;
     calculationController.state().dacValue = dacValue;
     const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * DAC_VREF;;
     calculationController.state().dacVoltage = dacVoltage;
@@ -494,6 +494,7 @@ void loop() {
             digitalWriteFast(PPS_ERROR_LED, LOW);
         }
         doCalculation();
+        digitalWriteFast(LOCK_LED, calculationController.state().ppsLocked ? HIGH : LOW);
     }
 
     wdt_reset();
