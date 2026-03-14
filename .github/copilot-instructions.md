@@ -303,27 +303,28 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - ⚠️ **The EFC setpoint variation between run2 (~24250 counts, 1.85 V) and this run (heading toward <8000 counts, <0.61 V) is ~16,000 counts (~1.2 V).** This is an enormous range for a single OCXO and suggests severe thermal variation between runs. EEPROM seeding becomes critical to avoid multi-hour convergence on each restart.
 
 ### log 2026-03-14-run4.log
-- **Run length: T158–T2108 (1951 seconds total; log starts partway into WARMUP).** Mode transition WARMUP→RUN at T605. ✅
+- **Full run T158–T9113 (8955 seconds total).** Mode transition WARMUP→RUN at T605. ✅
 - WARMUP: DAC fixed at 32767 / 2.5000 V, `iAccumulator` frozen at 32767.5, P term = 0.000 throughout. ✅
 - TIC sawtooth during WARMUP: full range ~0–810 counts, ~4-tick period (~200 ppb free-running offset). ✅
-- RUN starts T605: P-term clamp (±2000) hits immediately on first tick (`ticFrequencyError = −844` × gain 12 = −10130, clamped). ✅
-- iAccumulator pull-in: 32767.5 → ~25103 at T1100 → ~23751 at T2108. Early drift ~10–14 counts/tick, later ~1.3 counts/tick. Loop working correctly. ✅
-- `timerCounterReal` transitions from **2–3** (WARMUP, OCXO ~200 ppb fast) to **0 to −1** by T1050+ (OCXO very close to on-frequency). ✅
-- `ticFrequencyError` on non-wrap ticks shrinks from ±500–800 at T605 to **±10–150 counts** by T1100+. ✅
-- `ticCorrectedNetValueFiltered` crosses zero near T1071–T1082 (first `lockCount = 1`). ✅
-- **No LOCK declared** across the full run. `lockCount` reaches maximum of 5–6 near T2090–T2101, never reaching 32. ✅ Integrator drift guard is working correctly — iAccumulator still drifting ~1.3 counts/tick at end of run.
-- TIC sawtooth **not compressed** — still full amplitude and ~3–4 tick period at T2108. OCXO has not yet reached true on-frequency setpoint for this run's thermal conditions.
-- iAccumulator at T2108: **~23751** (~1.82 V). True setpoint estimated ~22000–23000 at these conditions; ~500–1000 s more needed.
+- RUN starts T605: P-term clamp (±2000) hits immediately on first tick. ✅
+- iAccumulator pull-in: 32767 → ~23750 by T1800 at ~11 counts/tick initially, slowing to ~0.03 counts/tick at T1800–T2000. OCXO was near on-frequency here (`timerCounterReal ≈ 0`). ✅
+- **Then the loop did NOT hold at ~23750.** iAccumulator resumed drifting downward, accelerating to ~13 counts/tick by T4200, and eventually hit DAC=0 at T6267. ⚠️
+- After T6267, `iAccumulator` stuck at 0.0 permanently. `timerCounterError` = +7 to +11 (OCXO now running slow), `ticCorrectedNetValueFiltered` = −30 to −50. **The I-step was always negative (pushing further into the floor), so it was discarded by the clamp — but the clamp only discarded `iRemainder`, not the step itself. The next tick computed a fresh negative step and hit the rail again. Infinite repeat.** ⚠️
+- **Root cause (two bugs):**
+  1. **`iAccumulatorLast` was computed as `iAccumulator - iStepFloor` after clamping**, not captured before the step. This made lockDetection drift measurement inaccurate.
+  2. **No true anti-windup**: when `iAccumulator` is clamped at a rail and the I-step is driving it deeper into that rail, the step (and remainder) should be discarded entirely. The old code zeroed `iRemainder` but still applied `iStepFloor` next tick as soon as remainder was clear.
+- **Fix applied:** `iAccumulatorLast` now captured before any step modification. Anti-windup now checks: if at `dacMinValue` and `iStepFloor < 0`, or at `dacMaxValue` and `iStepFloor > 0`, the step is discarded. Only steps that move **away from** the rail are applied.
+- T1101 anomaly: `TIC Frequency Error = 0.00, TIC delta = 0.0000` — identical TIC value two consecutive ticks. Not a bug. ✅
 - No missed PPS events across the full run. ✅
-- **EFC setpoint comparison across runs:** run2 ~24250 (1.85 V), run4 heading toward ~22000–23000, run3/run3-2 headed toward <8000 (<0.61 V). Thermal variation between sessions is the dominant factor. EEPROM seeding (Step 8) is critical.
-- T1101 anomaly: `TIC Frequency Error = 0.00, TIC delta = 0.0000` — identical TIC value two consecutive ticks (both = 634). Not a bug. ✅
 
 ### Step 6 — Validate and tune
 - ✅ First lock achieved at T1179 in run2.log. Loop is working correctly.
-- run3.log + run3-2.log (T604–T5739+): No lock declared. iAccumulator drifted from 32757 → 21880 (run3 end) → ~7700 (run3-2 end). Still converging.
-- run4.log (T158–T2108): No lock declared. iAccumulator at ~23751 at end, still drifting ~1.3 counts/tick. Algorithm correct.
-- **Massive EFC setpoint variation between runs:** run2 settled at ~24250 (1.85 V); run3 headed toward <8000 (<0.61 V); run4 heading toward ~22000–23000. Almost certainly thermal — the OCXO must be at significantly different ambient temperatures between runs.
-- **Current status:** algorithm is correct and loop is working. Convergence is slow because the iAccumulator must travel from mid-scale to the true setpoint, at ~3–14 counts/tick depending on how far away the setpoint is.
+- run3.log + run3-2.log (T604–T5739+): No lock declared. iAccumulator drifted from 32757 → ~7700. Still converging at run end.
+- run4.log (T158–T9113): **Anti-windup bug found and fixed.** iAccumulator hit DAC=0 at T6267 and stayed stuck. Two bugs:
+  - `iAccumulatorLast` was computed after clamping instead of before the step.
+  - I-steps that push deeper into a saturated rail were not being discarded — only `iRemainder` was cleared, so the next tick would compute a fresh step and hit the rail again.
+- **Fix applied in `piLoop()`:** `iAccumulatorLast` captured before step. Anti-windup discards any I-step (and zeros remainder) when accumulator is already at a rail and the step would move further into it. Steps that move away from the rail are still applied normally.
+- **Massive EFC setpoint variation between runs** (run2 ~24250; run3 <8000; run4 ~23750 near T1800) is real but not explained by thermal variation alone — the OCXO characteristics may vary with power-cycle history. EEPROM seeding (Step 8) remains critical.
 - If the loop oscillates: increase `damping` or `timeConst`.
 - If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
 

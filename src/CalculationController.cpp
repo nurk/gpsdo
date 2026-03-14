@@ -190,23 +190,39 @@ void CalculationController::piLoop(const OpMode mode) {
         + state_.iRemainder;
 
     const double iStepFloor = floor(iStep);
-    state_.iRemainder = iStep - iStepFloor; // carry the fractional part forward
-    state_.iAccumulator += iStepFloor;
 
-    // --- Clamp accumulator to prevent integrator wind-up ---
-    // The accumulator represents the long-term DAC value, so it must stay
-    // within the DAC range.
-    if (state_.iAccumulator < static_cast<double>(state_.dacMinValue)) {
-        state_.iAccumulator = static_cast<double>(state_.dacMinValue);
-        state_.iRemainder = 0.0;
-    }
-    if (state_.iAccumulator > static_cast<double>(state_.dacMaxValue)) {
-        state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
-        state_.iRemainder = 0.0;
-    }
+    // Record the accumulator value before this tick's step for lockDetection drift
+    // measurement. Must be captured here, before any modification, so that
+    // iAccumulatorLast always reflects the true previous-tick value.
+    state_.iAccumulatorLast = state_.iAccumulator;
 
-    // Record drift for lock detection before we forget the previous value.
-    state_.iAccumulatorLast = state_.iAccumulator - iStepFloor;
+    // --- Anti-windup: do not apply an I-step that pushes deeper into a rail ---
+    // If the accumulator is already at the minimum clamp and the step would make
+    // it more negative, discard the step (and its remainder) entirely.
+    // Likewise for the maximum clamp. This prevents the integrator from winding
+    // up indefinitely when the required EFC voltage is outside the DAC range.
+    const bool atMin = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
+    const bool atMax = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
+    const bool stepDrivesIntoMin = iStepFloor < 0.0;
+    const bool stepDrivesIntoMax = iStepFloor > 0.0;
+
+    if ((atMin && stepDrivesIntoMin) || (atMax && stepDrivesIntoMax)) {
+        // Step would push further into the rail — discard it.
+        state_.iRemainder = 0.0;
+    } else {
+        state_.iRemainder = iStep - iStepFloor; // carry the fractional part forward
+        state_.iAccumulator += iStepFloor;
+
+        // --- Clamp accumulator to DAC range ---
+        if (state_.iAccumulator < static_cast<double>(state_.dacMinValue)) {
+            state_.iAccumulator = static_cast<double>(state_.dacMinValue);
+            state_.iRemainder = 0.0;
+        }
+        if (state_.iAccumulator > static_cast<double>(state_.dacMaxValue)) {
+            state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
+            state_.iRemainder = 0.0;
+        }
+    }
 
     // --- Combine: integrator bias + proportional correction ---
     const double dacOutput = state_.iAccumulator + pTerm;
