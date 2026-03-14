@@ -14,6 +14,16 @@ constexpr uint16_t DAC_MAX_VALUE = 65535;
 constexpr float DAC_VREF = 5.0f; // REF5050 reference voltage (V)
 constexpr uint16_t WARMUP_TIME_DEFAULT = 600; // seconds
 
+// Best-guess EFC starting point for the next power-on, in DAC counts.
+// Seeding close to the true on-frequency value avoids the multi-hour pull-in
+// from mid-scale (32767) seen when the OCXO EFC setpoint is far from 2.5 V.
+// Update this after each long settled run — use the iAccumulator value once
+// the loop has been locked and stable for >1 hour (read from the log).
+// Observed settled values (open-air, ~30.7 °C OCXO):
+//   run9:  22787  (1.739 V)
+//   run10: ~23350  (1.782 V)
+constexpr uint16_t DAC_INITIAL_VALUE = 23350;
+
 using SetWarmupTimeFn = void(*)(uint16_t seconds);
 using SetDacFn = void(*)(uint16_t value);
 using ReadTempFn = float(*)();
@@ -46,8 +56,8 @@ struct GpsData {
 struct ControlState {
     bool isFirstTic = true;             // true until the first PPS tick has been used to seed *Old snapshots
 
-    uint16_t dacValue = DAC_MAX_VALUE / 2;
-    float dacVoltage = static_cast<float>(DAC_MAX_VALUE) * 0.5f / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
+    uint16_t dacValue = DAC_INITIAL_VALUE;
+    float dacVoltage = static_cast<float>(DAC_INITIAL_VALUE) / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
     int32_t holdValue = 0;
 
     int32_t timerCounterValueOld = 0;
@@ -73,7 +83,7 @@ struct ControlState {
     double ticDelta = 0.0;
 
     // --- PI loop state ---
-    double iAccumulator = DAC_MAX_VALUE / 2.0; // integrator state (DAC counts); initialised to mid-scale
+    double iAccumulator = DAC_INITIAL_VALUE; // integrator state (DAC counts); seeded from DAC_INITIAL_VALUE
     double iRemainder = 0.0;                   // fractional carry-forward to avoid truncation drift
     int32_t timeConst = 32;                    // loop time constant in seconds
     double gain = 12.0;                        // DAC counts per linearised TIC count (EFC sensitivity)

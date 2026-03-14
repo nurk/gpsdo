@@ -359,12 +359,11 @@ void setup() {
 
     warmupEndMillis = millis() + warmupTime * 1000UL;
 
-    // todo temp
-    int dacValue = DAC_MAX_VALUE / 2;
-    calculationController.state().dacValue = dacValue;
-    const float dacVoltage = static_cast<float>(dacValue) / DAC_MAX_VALUE * DAC_VREF;;
-    calculationController.state().dacVoltage = dacVoltage;
-    setDacValue(dacValue);
+    // Seed DAC and iAccumulator from DAC_INITIAL_VALUE (see Constants.h).
+    // Update DAC_INITIAL_VALUE after each settled run to reduce pull-in time.
+    calculationController.state().dacValue = DAC_INITIAL_VALUE;
+    calculationController.state().dacVoltage = static_cast<float>(DAC_INITIAL_VALUE) / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
+    setDacValue(DAC_INITIAL_VALUE);
 }
 
 void processGps() {
