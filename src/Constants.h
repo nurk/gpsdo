@@ -20,10 +20,10 @@ constexpr uint16_t WARMUP_TIME_DEFAULT = 600; // seconds
 // from mid-scale (32767) seen when the OCXO EFC setpoint is far from 2.5 V.
 // Update this after each long settled run — use the iAccumulator value once
 // the loop has been locked and stable for >1 hour (read from the log).
-// Observed settled values (open-air, ~30.7 °C OCXO):
+// Observed settled values (open-air, ~30.6 °C OCXO):
 //   run9:  22787  (1.739 V)
-//   run10: ~23350  (1.782 V)
-constexpr uint16_t DAC_INITIAL_VALUE = 23350;
+//   run10: ~22980  (1.754 V)  — settled after 4356 s in RUN, 3592 s continuously locked
+constexpr uint16_t DAC_INITIAL_VALUE = 22880; // midpoint of run9/run10 settled values
 
 using SetWarmupTimeFn = void(*)(uint16_t seconds);
 using SetDacFn = void(*)(uint16_t value);
