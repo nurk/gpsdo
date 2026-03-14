@@ -59,6 +59,10 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(state_.iRemainder, 4);
     Serial2.print(F(", P term: "));
     Serial2.print(state_.pTerm, 4);
+    Serial2.print(F(", Coarse Trim: "));
+    Serial2.print(state_.lastCoarseTrim, 4);
+    Serial2.print(F(", Coarse Error Accumulator: "));
+    Serial2.print(state_.coarseErrorAccumulator, 4);
     Serial2.print(F(", PPS Lock count: "));
     Serial2.print(state_.ppsLockCount);
     Serial2.print(F(", DAC Voltage: "));
@@ -71,7 +75,6 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(readTemp_(), 2);
     Serial2.print(F(", Mode: "));
     Serial2.println(mode);
-
 #endif
 
     updateSnapshots(localTimerCounter);
@@ -232,6 +235,43 @@ void CalculationController::piLoop(const OpMode mode) {
         }
     }
 
+    // --- Coarse frequency trim ---
+    // The fine TIC loop nulls the phase error (ticCorrectedNetValueFiltered → 0)
+    // but cannot correct a residual frequency offset that causes the TIC sawtooth
+    // to keep wrapping. timerCounterError captures this: each count = 200 ns of
+    // frequency offset per second. A persistent non-zero mean (e.g. −0.78 in run9)
+    // means the OCXO is consistently fast/slow by a sub-200 ns amount that the fine
+    // loop has nulled in phase but not in frequency.
+    //
+    // This outer loop accumulates timerCounterError every tick and every
+    // coarseTrimPeriod seconds applies a small trim to iAccumulator proportional
+    // to the accumulated sum. The gain is deliberately tiny — this is a very slow
+    // correction that must not fight the fine I-term.
+    //
+    // Anti-windup: same rail checks as the fine I-term apply.
+    state_.coarseErrorAccumulator += static_cast<double>(state_.timerCounterError);
+    state_.lastCoarseTrim = 0.0;
+
+    if (state_.time % state_.coarseTrimPeriod == 0) {
+        const double coarseTrim = state_.coarseErrorAccumulator * state_.coarseTrimGain;
+        state_.coarseErrorAccumulator = 0.0;
+
+        const bool coarseAtMin = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
+        const bool coarseAtMax = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
+        const bool coarseDrivesMin = coarseTrim < 0.0;
+        const bool coarseDrivesMax = coarseTrim > 0.0;
+
+        if (!((coarseAtMin && coarseDrivesMin) || (coarseAtMax && coarseDrivesMax))) {
+            state_.iAccumulator += coarseTrim;
+            if (state_.iAccumulator < static_cast<double>(state_.dacMinValue))
+                state_.iAccumulator = static_cast<double>(state_.dacMinValue);
+            if (state_.iAccumulator > static_cast<double>(state_.dacMaxValue))
+                state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
+        }
+
+        state_.lastCoarseTrim = coarseTrim;
+    }
+
     // --- Combine: integrator bias + proportional correction ---
     const double dacOutput = state_.iAccumulator + pTerm;
 
@@ -263,10 +303,6 @@ void CalculationController::lockDetection(const OpMode mode) {
         if (absFiltered > UNLOCK_THRESHOLD) {
             state_.ppsLocked = false;
             state_.ppsLockCount = 0;
-
-#ifdef DEBUG_CALCULATION
-            Serial2.println(F("LOCK LOST"));
-#endif
         }
     }
     else {
@@ -289,10 +325,6 @@ void CalculationController::lockDetection(const OpMode mode) {
             // This ensures the EMA has fully settled before we call it locked.
             if (state_.ppsLockCount >= state_.ticFilterConst * 2) {
                 state_.ppsLocked = true;
-
-#ifdef DEBUG_CALCULATION
-                Serial2.println(F("LOCKED"));
-#endif
             }
         }
         else {

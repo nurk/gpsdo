@@ -81,6 +81,8 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 ## `ControlState` — current fields (in `src/Constants.h`)
 
 ```
+isFirstTic                  bool       — true until tick 1 has seeded all *Old snapshots; skips all calculations on tick 1
+
 dacValue                    uint16_t   — current DAC output value
 dacVoltage                  float      — derived from dacValue / DAC_MAX_VALUE * DAC_VREF
 holdValue                   int32_t    — DAC value to use in HOLD mode
@@ -105,15 +107,21 @@ ticCorrectedNetValueFiltered double    — EMA-filtered phase error (input to I-
 ticFrequencyError           double     — combined frequency error: ticDelta + timerCounterError×200
   │                                        ticDelta = ticCorrectedNetValue − (ticValueCorrectionOld − ticValueCorrectionOffset)
   │                                        timerCounterError×200 converts coarse counter ticks (200 ns each) to ns units
+ticDelta                    double     — rate of change of offset-subtracted phase error (P-term source)
 ticFilterSeeded             bool       — false until first real value seeds the EMA
-isFirstTic                  bool       — true until tick 1 has seeded all *Old snapshots; skips all calculations on tick 1
 ticFilterConst              int32_t    — EMA time constant in seconds (default 16)
 
-iAccumulator                double     — integrator state in DAC counts; initialised to mid-scale (32767)
+iAccumulator                double     — integrator state in DAC counts; initialised to mid-scale (32767.5)
 iRemainder                  double     — fractional carry-forward for I-step to avoid truncation drift
 timeConst                   int32_t    — loop time constant in seconds (default 32)
 gain                        double     — DAC counts per linearised TIC count / EFC sensitivity (default 12.0)
 damping                     double     — P/I ratio; higher = more damped, slower pull-in (default 3.0)
+pTerm                       double     — proportional term (DAC counts) — logged each PPS
+
+coarseErrorAccumulator      double     — running sum of timerCounterError; reset each coarseTrimPeriod
+coarseTrimGain              double     — DAC counts applied per accumulated timerCounterError count (default 0.5)
+coarseTrimPeriod            int32_t    — seconds between coarse trim steps (default 64; must be > timeConst)
+lastCoarseTrim              double     — most recent coarse trim value applied (0 on non-trim ticks; logged each PPS)
 
 dacMinValue                 uint16_t   — lower DAC safety limit (default 0)
 dacMaxValue                 uint16_t   — upper DAC safety limit (default 65535)
@@ -122,8 +130,8 @@ ppsLocked                   bool       — true when loop has been locked for �
 ppsLockCount                int32_t    — consecutive seconds within LOCK_THRESHOLD; resets on any excursion
 
 ticOffset                   double     — expected mid-point of TIC range (default 500.0)
-x2Coefficient               double     — quadratic linearisation coeff (stored pre-scaled /1000)
-x3Coefficient               double     — cubic linearisation coeff (stored pre-scaled /100000)
+x2Coefficient               double     — quadratic linearisation coeff (stored pre-scaled /1000; default 1.0e-4)
+x3Coefficient               double     — cubic linearisation coeff (stored pre-scaled /100000; default 3.0e-7)
 ```
 
 ---
@@ -137,24 +145,32 @@ calculate()
   ├── ticLinearization()         — cubic polynomial, produce ticCorrectedNetValue
   ├── ticPreFilter()             — EMA on ticCorrectedNetValue → ticCorrectedNetValueFiltered
   │                                Seeds on first tick; skips EMA until ticFilterSeeded == true
-  ├── computeFrequencyError()    — ticFrequencyError = ticDelta + coarseFreqError
-  │                                where ticDelta = ticCorrectedNetValue - (ticValueCorrectionOld - ticValueCorrectionOffset)
-  │                                and coarseFreqError = timerCounterError × 200 (ns per 5 MHz counter tick)
-  │                                Guarded by ticFilterSeeded (skipped on tick 2 before Old is valid)
+  ├── computeFrequencyError()    — ticDelta = ticCorrectedNetValue - (ticValueCorrectionOld - ticValueCorrectionOffset)
+  │                                ticFrequencyError = ticDelta + timerCounterError × 200 (ns per 5 MHz counter tick)
+  │                                Both stored in ControlState. Guarded by ticFilterSeeded (skipped on tick 2).
   ├── piLoop(mode)               — PI control; only active when mode == RUN
-  │                                P-term = ticFrequencyError * gain
+  │                                P-term = ticDelta * gain (NOT ticFrequencyError — coarse term caused GPS jitter noise)
+  │                                  Clamped to ±PTERM_MAX_COUNTS. Stored in state_.pTerm.
   │                                I-step = ticCorrectedNetValueFiltered * gain / damping / timeConst
-  │                                iAccumulator clamped to [dacMinValue, dacMaxValue]
+  │                                  + iRemainder (fractional carry-forward)
+  │                                iAccumulator updated with floor(iStep); remainder stored in iRemainder.
+  │                                Anti-windup: I-step discarded (and iRemainder zeroed) if accumulator is
+  │                                  already at a rail and step would push further into it.
+  │                                iAccumulator clamped to [dacMinValue, dacMaxValue].
+  │                                Coarse trim (outer loop on timerCounterError):
+  │                                  coarseErrorAccumulator += timerCounterError each tick.
+  │                                  Every coarseTrimPeriod seconds: iAccumulator += coarseErrorAccumulator * coarseTrimGain,
+  │                                  coarseErrorAccumulator reset to 0, lastCoarseTrim recorded.
+  │                                  Anti-windup: trim discarded if already at a rail.
+  │                                  Corrects residual frequency offsets the fine TIC loop cannot null.
   │                                dacOutput = iAccumulator + pTerm, clamped, written via setDac_()
   ├── lockDetection(mode)        — only active when mode == RUN
   │                                Counts consecutive seconds where abs(ticCorrectedNetValueFiltered) < LOCK_THRESHOLD (50)
-  │                                Declares lock after lockCount ≥ 2 × ticFilterConst
+  │                                Declares lock after ppsLockCount ≥ 2 × ticFilterConst
   │                                Declares unlock immediately when abs(filtered) > UNLOCK_THRESHOLD (100)
-  │                                Resets ppsLocked and lockCount when leaving RUN mode
+  │                                Resets ppsLocked and ppsLockCount when leaving RUN mode
   │                                Drives LOCK_LED via ppsLocked (written in main loop)
-  │                                Note: iDrift guard removed — once converged, per-tick I-step oscillates
-  │                                with the TIC sawtooth and always exceeds the old threshold even when
-  │                                the mean accumulator drift is ~zero. Phase condition alone is sufficient.
+  │                                No iDrift guard — phase condition alone is sufficient (see run7/run8 notes)
   └── updateSnapshots()          — copy current values to *Old fields
 ```
 
@@ -244,7 +260,7 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - No missed PPS events across the full 1728-second run. ✅
 - **Remaining item to watch:** slow residual iAccumulator drift post-lock (~5 counts/tick). At this rate the integrator will reach a new stable point in another ~200–300 seconds. The TIC sawtooth will compress further once the OCXO is closer to on-frequency.
 
-### ~~Step 3 — PI control loop~~ ✅ Done (awaiting re-validation after P-term fix)
+### ~~Step 3 — PI control loop~~ ✅ Done (validated in run2/run5/run6/run8/run9)
 - Added to `ControlState`: `iAccumulator` (double, init mid-scale), `iRemainder` (double),
   `timeConst` (int32_t, default 32), `gain` (double, default 12.0),
   `damping` (double, default 3.0), `dacMinValue` / `dacMaxValue` (uint16_t, 0 / 65535).
@@ -264,11 +280,11 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - `iAccumulator` clamped to `[dacMinValue, dacMaxValue]` to prevent wind-up.
 - Final `dacOutput = iAccumulator + pTerm`, clamped and written via `setDac_()`.
 
-### Step 4 — DAC clamp / safety limits ✅ Done (implemented alongside Step 3)
+### ~~Step 4 — DAC clamp / safety limits~~ ✅ Done (implemented alongside Step 3)
 - `dacMinValue` / `dacMaxValue` added to `ControlState` (defaults 0 / 65535).
 - Every DAC write in `piLoop()` is clamped to these limits.
 
-### ~~Step 5 — Lock detection~~ ✅ Done (awaiting validation run)
+### ~~Step 5 — Lock detection~~ ✅ Done (validated in run8/run9)
 - Added to `ControlState`: `ppsLocked` (bool), `lockCount` (int32_t).
 - Added to `Constants.h`: `LOCK_THRESHOLD` (50.0), `UNLOCK_THRESHOLD` (100.0).
 - Private method `lockDetection(OpMode mode)` implemented in `CalculationController`.
@@ -357,15 +373,6 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
   - With `ticDelta` as the source, `PTERM_MAX_COUNTS` restored to **2000**: the sawtooth ramp at ~170 counts/s × gain 12 = ~2040 counts is a real signal that should pass; wrap spikes at ~500–800 counts × gain 12 = 6000–9600 are correctly clamped. The 200-count clamp was only needed because `coarseFreqError` was inflating every tick — with `ticDelta` that problem is gone.
 - No missed PPS events. ✅
 
-### Step 6 — Validate and tune (running summary)
-- run2.log: ✅ First lock at T1179. Loop confirmed working.
-- run4.log: **Anti-windup bug fixed** — `iAccumulatorLast` captured before step; I-steps into saturated rail discarded.
-- run5.log: **P-term clamp 2000→200** — clamp was firing 75% of all ticks including normal non-wrap ticks.
-- run6.log: **P-term source changed `ticFrequencyError`→`ticDelta`** — coarse counter term was firing on 92% of ticks from normal GPS PPS jitter.
-  - **`PTERM_MAX_COUNTS` restored to 2000**: with `ticDelta` as source, 2000 is the correct scale — it passes the real sawtooth ramp signal (~2040 counts) and only clips the wrap spikes (~6000–9600).
-- If the loop oscillates: increase `damping` or `timeConst`.
-- If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
-
 ### log 2026-03-14-run7.log
 - **Run T24–T1608 (1584 seconds total).** Mode transition WARMUP→RUN at T604. ✅
 - `iAccumulator` converged from 32767 → ~24223 by T1608. Consistent with previous runs (~24250). ✅
@@ -375,16 +382,6 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - **Root cause:** `LOCK_INTEGRATOR_DRIFT_MAX` guard was the blocker. Once converged, the I-step oscillates ±(filtered×0.125) each tick following the TIC sawtooth. Even though the *mean* drift is ~0.08/tick, the *per-tick* step is ±7.5 counts — permanently above the 2.0-count threshold. The guard was correctly rejecting premature lock during pull-in but incorrectly blocking lock after convergence.
 - **Separately:** even with only the phase condition, max consecutive `|filtered|<50` was **30 ticks** — just 2 short of the 32 threshold. The loop was essentially locked but the count kept resetting when the TIC sawtooth swung the EMA above ±50.
 - **Fix applied:** `LOCK_INTEGRATOR_DRIFT_MAX` guard removed from `lockDetection()`. Lock now requires only `|filtered| < LOCK_THRESHOLD` for `2 × ticFilterConst` consecutive seconds. `LOCK_INTEGRATOR_DRIFT_MAX` constant removed from `Constants.h`.
-
-### Step 6 — Validate and tune (running summary)
-- run2.log: ✅ First lock at T1179. Loop confirmed working.
-- run4.log: **Anti-windup bug fixed** — `iAccumulatorLast` captured before step; I-steps into saturated rail discarded.
-- run5.log: **P-term clamp 2000→200** — clamp was firing 75% of all ticks including normal non-wrap ticks.
-- run6.log: **P-term source changed `ticFrequencyError`→`ticDelta`** — coarse counter term was firing on 92% of ticks from normal GPS PPS jitter.
-  - **`PTERM_MAX_COUNTS` restored to 2000**: with `ticDelta` as source, 2000 is the correct scale — it passes the real sawtooth ramp signal (~2040 counts) and only clips the wrap spikes (~6000–9600).
-- run7.log: **iDrift guard removed from `lockDetection()`** — per-tick I-step always exceeds `LOCK_INTEGRATOR_DRIFT_MAX` once converged due to TIC sawtooth oscillation, even though mean drift is ~zero.
-- If the loop oscillates: increase `damping` or `timeConst`.
-- If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
 
 ### log 2026-03-14-run8.log
 - **Run T9–T1415 (1406 seconds total).** Mode transition WARMUP→RUN at T604. ✅
@@ -397,13 +394,17 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - No missed PPS events. ✅
 
 ### log 2026-03-14-run9.log
-- **Run T8–T1578 (1570 seconds total).** Mode transition WARMUP→RUN at T604. ✅
+- **Extended run T8–T6791 (6783 seconds total).** Mode transition WARMUP→RUN at T604. ✅
 - **Temperature sensors added to log:** `Temp OCXO` (sensor below OCXO) and `Temp Board` (sensor near TIC capacitor). ✅
 - **Box removed** — hardware back in open air. OCXO steady at 30.62–30.75 °C throughout. Board at 22.25 °C. ✅
 - **LOCKED declared at T1447** (`ppsLockCount` = 32). ✅
-- `iAccumulator` converging toward ~23900 counts = 1.824 V at T1578. Slightly lower than run8 (~24182) — consistent with the same open-air ambient thermal conditions. ✅
-- Sawtooth period 11–12 ticks at end of log — still converging, not yet compressed. ✅
-- Mean `ticCorrectedNetValueFiltered` over last 130 ticks: −15.6 counts → mean I-step −1.95/tick. Still drifting slowly downward. ✅
+- **No unlock events across the full 6783-second run.** ✅
+- `iAccumulator` converged and stable from ~T3600 onward at **~22,787 counts = 1.739 V**. ✅
+  - Final 1000s: mean = 22,787, std dev = **39 counts = 3 mV** — essentially static.
+  - Mean filtered = **+0.67 counts**, mean I-step = **+0.084/tick** — loop fully at its null.
+- **TIC sawtooth did NOT compress.** Sawtooth period stuck at 6–7 ticks throughout the settled region. ⚠️
+- **Root cause identified — hardware limit:** `timerCounterReal` distribution in the final 1000s is centred at −0.78 (mostly −1), meaning the OCXO is running **~156 ppb fast** even with the integrator fully settled at 1.739 V. The EFC range at this ambient temperature cannot bring the OCXO to true zero frequency error. The loop has found the best DAC value it can but cannot close the residual 156 ppb offset. This is an OCXO hardware characteristic, not a software bug.
+- The 6–7 tick sawtooth period is exactly consistent with 156 ppb drift: TIC range = 100 ns, 100 ns / 156 ns/s ≈ 0.64 s ≈ 6–7 ticks. ✅
 - No missed PPS events. ✅
 - **Unlock bug identified:** single-tick immediate unlock fires on TIC sawtooth peaks brushing ±100 counts, resetting the 32-second re-lock counter unnecessarily. ⚠️ (fix reverted — kept as single-tick unlock for now)
 
@@ -415,18 +416,30 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - run7.log: iDrift guard removed from `lockDetection()`.
 - run8.log: ✅ First lock with all fixes in place. T1371.
 - run9.log: Temperature sensors added. Unlock hysteresis fix attempted but reverted — kept as single-tick unlock.
+  - **Extended run (6783 s):** iAccumulator fully converged at 22,787 counts = 1.739 V. Mean filtered = +0.67, mean I-step = +0.084/tick. Loop is at its null.
+  - TIC sawtooth stuck at 6–7 ticks — **hardware limit**: OCXO runs ~156 ppb fast even at EFC null. timerCounterReal distribution centred at −0.78 in settled region. The loop is correct; the OCXO's EFC range cannot reach true 0 ppb at this temperature. Coarse trim loop (Step 7) implemented to address this.
 - If the loop oscillates: increase `damping` or `timeConst`.
 - If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
-- Run for 8000–10000 seconds total (ideally until `iAccumulator` stabilises and TIC sawtooth compresses to ≪100 counts peak-to-peak).
-- The run3 setpoint appears to be somewhere below ~7700 counts (~0.59 V) — needs more data.
+- Run for 8000–10000 seconds total after coarse trim enabled (watch `lastCoarseTrim` in log; expect `timerCounterReal` mean to shift toward 0).
 - Watch for sawtooth period increasing (means OCXO is closer to on-frequency and drift rate is falling).
 - Watch `ticFrequencyError` on normal ticks approaching zero — that is the true indicator of frequency lock.
 - When `ticFrequencyError` on non-wrap ticks is consistently ±10 counts or less, the OCXO is essentially on-frequency.
 - **Note:** Consider increasing `WARMUP_TIME_DEFAULT` to 900–1200 s to allow better thermal stabilisation before RUN mode engages.
 
-### Step 8 — EEPROM persistence (future)
+### ~~Step 7 — Coarse frequency trim~~ ✅ Done (implemented in `piLoop()`)
+- `coarseErrorAccumulator`, `coarseTrimGain` (default 0.5), `coarseTrimPeriod` (default 64 s), `lastCoarseTrim` added to `ControlState`.
+- Every tick: `coarseErrorAccumulator += timerCounterError`.
+- Every `coarseTrimPeriod` seconds: `iAccumulator += coarseErrorAccumulator * coarseTrimGain`, accumulator reset to 0.
+- Anti-windup: trim discarded if `iAccumulator` is already at a rail and trim would push further in.
+- `lastCoarseTrim` recorded for logging (0 on non-trim ticks).
+- Corrects residual frequency offsets (e.g. OCXO running 156 ppb fast) that the fine TIC phase loop nulls in phase but cannot correct in frequency.
+- Identified as necessary from run9.log where `timerCounterReal` settled at −0.78 (i.e. ~156 ppb residual offset).
+
+### Step 8 — EEPROM persistence (next priority)
 - Save `iAccumulator` and tuning constants to EEPROM on power-down / periodically.
 - On power-up, seed `iAccumulator` from saved value to avoid long re-convergence warm-up.
+- EEPROM hardware (24LC128 at 0x50) is already initialised in `main.cpp` (`I2C_eeprom eeprom`). `saveState()` callback exists but is a stub (`// todo`).
+- Critical: run3/run3-2 showed EFC setpoint can vary by ~16,000 counts (~1.2 V) between runs due to thermal variation — without seeding, convergence can take 5000+ seconds.
 
 ---
 

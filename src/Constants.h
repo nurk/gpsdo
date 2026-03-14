@@ -84,6 +84,21 @@ struct ControlState {
     uint16_t dacMinValue = 0;
     uint16_t dacMaxValue = DAC_MAX_VALUE;
 
+    // --- Coarse frequency trim ---
+    // A slow secondary integrator on timerCounterError that corrects residual
+    // frequency offsets the fine TIC loop cannot see (e.g. OCXO running fast/slow
+    // by a fraction of a coarse counter tick, visible as a persistent non-zero mean
+    // timerCounterError). Accumulates timerCounterError each tick and applies a
+    // tiny trim to iAccumulator every coarseTrimPeriod seconds.
+    // coarseTrimGain: DAC counts added to iAccumulator per unit of accumulated
+    // timerCounterError per coarseTrimPeriod seconds. Keep very small — this is a
+    // slow outer loop. Default 0.5 means one coarse tick of persistent error
+    // contributes 0.5 DAC counts per trim period.
+    double  coarseErrorAccumulator = 0.0;  // running sum of timerCounterError
+    double  coarseTrimGain         = 0.5;  // DAC counts per accumulated coarse count per period
+    int32_t coarseTrimPeriod       = 64;   // seconds between coarse trim steps (must be > timeConst)
+    double  lastCoarseTrim         = 0.0;  // most recent coarse trim applied (logged each PPS; 0 on non-trim ticks)
+
     // --- PPS Locked ---
     bool ppsLocked = false;
     int32_t ppsLockCount = 0;  // consecutive seconds within LOCK_THRESHOLD; lock declared at 2 × ticFilterConst
