@@ -53,6 +53,8 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(state_.ticDelta, 4);
     Serial2.print(F(", I Accumulator: "));
     Serial2.print(state_.iAccumulator, 4);
+    Serial2.print(F(", I Remainder: "));
+    Serial2.print(state_.iRemainder, 4);
     Serial2.print(F(", P term: "));
     Serial2.print(state_.pTerm, 4);
     Serial2.print(F(", PPS Lock count: "));

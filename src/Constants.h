@@ -120,7 +120,13 @@ constexpr double LOCK_INTEGRATOR_DRIFT_MAX = 2.0;
 
 // Maximum P-term contribution in DAC counts per tick.
 // The raw TIC sawtooth spans ~500 counts/s × gain 12 = ~6000 counts, which would
-// slam the DAC on every wrap. Clamping to ±2000 limits the kick while still
-// providing meaningful frequency-error damping.
-constexpr double PTERM_MAX_COUNTS = 2000.0;  //0.1526V
+// slam the DAC on every wrap. Clamping limits the kick while still providing
+// meaningful frequency-error damping.
+//
+// With gain=12 the clamp starts cutting at |ticFrequencyError| > PTERM_MAX_COUNTS/12.
+//   2000 → clips at |fe| > 167 counts — fires on 75% of all ticks, even normal non-wrap ticks.
+//          DAC swings ±2000 (~0.15 V) every second. Too large.
+//   200  → clips at |fe| > 17 counts — wraps still hard-clamped; normal-tick P passes through.
+//          DAC swings at most ±200 (~0.015 V) per tick. Appropriate scale.
+constexpr double PTERM_MAX_COUNTS = 200.0;
 #endif //GPSDO_V1_0_CONSTANTS_H

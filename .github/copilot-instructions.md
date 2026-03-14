@@ -74,7 +74,7 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `WARMUP_TIME_DEFAULT` | 600 s | Default OCXO warm-up time |
 | `LOCK_THRESHOLD` | 50.0 | Lock declared when `abs(filtered)` stays below this for 2×ticFilterConst s |
 | `UNLOCK_THRESHOLD` | 100.0 | Lock lost immediately when `abs(filtered)` exceeds this |
-| `PTERM_MAX_COUNTS` | 2000.0 | Maximum absolute DAC counts the P-term may contribute per tick |
+| `PTERM_MAX_COUNTS` | 200.0 | Maximum absolute DAC counts the P-term may contribute per tick |
 | `LOCK_INTEGRATOR_DRIFT_MAX` | 2.0 | Maximum `abs(iAccumulator - iAccumulatorLast)` counts/tick allowed while counting toward lock |
 
 ---
@@ -324,7 +324,24 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
   - `iAccumulatorLast` was computed after clamping instead of before the step.
   - I-steps that push deeper into a saturated rail were not being discarded — only `iRemainder` was cleared, so the next tick would compute a fresh step and hit the rail again.
 - **Fix applied in `piLoop()`:** `iAccumulatorLast` captured before step. Anti-windup discards any I-step (and zeros remainder) when accumulator is already at a rail and the step would move further into it. Steps that move away from the rail are still applied normally.
-- **Massive EFC setpoint variation between runs** (run2 ~24250; run3 <8000; run4 ~23750 near T1800) is real but not explained by thermal variation alone — the OCXO characteristics may vary with power-cycle history. EEPROM seeding (Step 8) remains critical.
+
+### log 2026-03-14-run5.log
+- **Run T13–T1353 (1340 seconds total).** Mode transition WARMUP→RUN at T604. ✅
+- Anti-windup fix confirmed working: `iAccumulator` converged cleanly from 32767 → ~24430 at T1353. No runaway. ✅
+- `timerCounterReal` oscillating ±1 to ±2 at end of run — OCXO very close to on-frequency. ✅
+- EFC setpoint consistent with run2 (~24250) and run4 (~23750 at T1800) — confirms same ambient temperature. ✅
+- **P-term clamp (2000) found to be too large:**
+  - P-term hits ±2000 clamp on **75% of all RUN-mode ticks**.
+  - Even on normal (non-wrap) ticks: clamp fires on **58%** of them.
+  - Mean `|ticFrequencyError|` on non-wrap ticks ≈ 192 counts × gain 12 = **2304 DAC counts** — exceeds the 2000 clamp on average.
+  - DAC swings ±2000 counts (±0.15 V) almost every tick — masking the actual P signal and injecting large noise.
+  - The clamp is 320× a typical I-step (~6 counts/tick at filtered=50) — far too unbalanced.
+- **Fix applied:** `PTERM_MAX_COUNTS` reduced from 2000 to **200**.
+  - At gain=12, the clamp now fires only when `|ticFrequencyError| > 17 counts`.
+  - Sawtooth wraps (typically ±500–800 counts × 12 = ±6000–9600) are still hard-clamped to ±200.
+  - Normal near-setpoint ticks pass through unclamped — genuine frequency-error damping.
+  - DAC swing from P-term now ≤ ±200 counts (±0.015 V) per tick. Appropriate scale.
+- No missed PPS events. ✅
 - If the loop oscillates: increase `damping` or `timeConst`.
 - If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
 
