@@ -9,6 +9,7 @@ class CalculationController {
 public:
     CalculationController(SetDacFn setDac,
                           ReadTempFn readTemp,
+                          ReadOCXOTempFn readOCXOTemp,
                           SaveStateFn saveState,
                           SetTCA0CountFn setTCA0Count);
 
@@ -25,6 +26,7 @@ private:
 
     SetDacFn setDac_;
     ReadTempFn readTemp_;
+    ReadOCXOTempFn readOCXOTemp_;
     SaveStateFn saveState_;
     SetTCA0CountFn setTCA0Count_;
 

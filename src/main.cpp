@@ -75,7 +75,11 @@ TinyGPSPlus gps;
 uint16_t warmupTime = WARMUP_TIME_DEFAULT; // seconds
 unsigned long warmupEndMillis;
 
-CalculationController calculationController(setDacValue, readTemperatureC, saveState, setTCA0Count);
+CalculationController calculationController(setDacValue,
+                                            readTemperatureC,
+                                            readOCXOTemperatureC,
+                                            saveState,
+                                            setTCA0Count);
 LcdController lcdController(lcd,
                             calculationController,
                             readTemperatureC,

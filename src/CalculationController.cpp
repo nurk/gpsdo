@@ -3,10 +3,12 @@
 
 CalculationController::CalculationController(const SetDacFn setDac,
                                              const ReadTempFn readTemp,
+                                             const ReadOCXOTempFn readOCXOTemp,
                                              const SaveStateFn saveState,
                                              const SetTCA0CountFn setTCA0Count)
     : setDac_(setDac),
       readTemp_(readTemp),
+      readOCXOTemp_(readOCXOTemp),
       saveState_(saveState),
       setTCA0Count_(setTCA0Count) {
 }
@@ -63,6 +65,10 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(state_.dacVoltage, 4);
     Serial2.print(F(", DAC Value: "));
     Serial2.print(state_.dacValue);
+    Serial2.print(F(", Temp OCXO: "));
+    Serial2.print(readOCXOTemp_(), 2);
+    Serial2.print(F(", Temp Board: "));
+    Serial2.print(readTemp_(), 2);
     Serial2.print(F(", Mode: "));
     Serial2.println(mode);
 
@@ -210,7 +216,8 @@ void CalculationController::piLoop(const OpMode mode) {
     if ((atMin && stepDrivesIntoMin) || (atMax && stepDrivesIntoMax)) {
         // Step would push further into the rail — discard it.
         state_.iRemainder = 0.0;
-    } else {
+    }
+    else {
         state_.iRemainder = iStep - iStepFloor; // carry the fractional part forward
         state_.iAccumulator += iStepFloor;
 

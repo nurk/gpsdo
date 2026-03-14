@@ -386,6 +386,16 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - If the loop oscillates: increase `damping` or `timeConst`.
 - If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
 
+### log 2026-03-14-run8.log
+- **Run T9–T1415 (1406 seconds total).** Mode transition WARMUP→RUN at T604. ✅
+- **LOCKED declared at T1371** (`ppsLockCount` = 32 = 2 × ticFilterConst). ✅ First lock with the iDrift guard removed.
+- `iAccumulator` at lock: ~24182 counts = 1.845 V. Consistent with all previous runs (~24100–24250). ✅
+- `ppsLockCount` holds at 32 continuously from T1371 to end of log. ✅
+- `timerCounterReal` at end: −1 to 0. `ticCorrectedNetValueFiltered` = +20 at final tick. OCXO very close to on-frequency. ✅
+- TIC sawtooth still active (full range visible) — P-term still swinging ±500–2000 counts. More run time needed for sawtooth to compress. ✅
+- `iAccumulatorLast` field and `LOCK_INTEGRATOR_DRIFT_MAX` constant removed (dead code cleanup). ✅
+- No missed PPS events. ✅
+
 ### Step 7 — Extended convergence run
 - Run for 8000–10000 seconds total (ideally until `iAccumulator` stabilises and TIC sawtooth compresses to ≪100 counts peak-to-peak).
 - The run3 setpoint appears to be somewhere below ~7700 counts (~0.59 V) — needs more data.
