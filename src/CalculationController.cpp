@@ -195,10 +195,6 @@ void CalculationController::piLoop(const OpMode mode) {
 
     const double iStepFloor = floor(iStep);
 
-    // Record the accumulator value before this tick's step for lockDetection drift
-    // measurement. Must be captured here, before any modification, so that
-    // iAccumulatorLast always reflects the true previous-tick value.
-    state_.iAccumulatorLast = state_.iAccumulator;
 
     // --- Anti-windup: do not apply an I-step that pushes deeper into a rail ---
     // If the accumulator is already at the minimum clamp and the step would make

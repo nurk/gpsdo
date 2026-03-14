@@ -74,7 +74,6 @@ struct ControlState {
 
     // --- PI loop state ---
     double iAccumulator = DAC_MAX_VALUE / 2.0; // integrator state (DAC counts); initialised to mid-scale
-    double iAccumulatorLast = DAC_MAX_VALUE / 2.0; // snapshot of iAccumulator from previous tick (for drift guard)
     double iRemainder = 0.0;                   // fractional carry-forward to avoid truncation drift
     int32_t timeConst = 32;                    // loop time constant in seconds
     double gain = 12.0;                        // DAC counts per linearised TIC count (EFC sensitivity)

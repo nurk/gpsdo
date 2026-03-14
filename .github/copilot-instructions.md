@@ -110,7 +110,6 @@ isFirstTic                  bool       — true until tick 1 has seeded all *Old
 ticFilterConst              int32_t    — EMA time constant in seconds (default 16)
 
 iAccumulator                double     — integrator state in DAC counts; initialised to mid-scale (32767)
-iAccumulatorLast            double     — iAccumulator value from previous tick; used by lockDetection to measure per-tick drift
 iRemainder                  double     — fractional carry-forward for I-step to avoid truncation drift
 timeConst                   int32_t    — loop time constant in seconds (default 32)
 gain                        double     — DAC counts per linearised TIC count / EFC sensitivity (default 12.0)
