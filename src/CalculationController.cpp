@@ -132,7 +132,7 @@ void CalculationController::ticPreFilter() {
         return;
     }
 
-    // EMA: filtered += (raw - filtered) / filterConst
+    // EMA (Exponential Moving Average): filtered += (raw - filtered) / filterConst
     // A natural lock detector follows: once abs(filtered) stays below a
     // threshold for N * filterConst consecutive seconds, the loop is locked.
     state_.ticCorrectedNetValueFiltered +=
@@ -201,6 +201,7 @@ void CalculationController::piLoop(const OpMode mode) {
     // it more negative, discard the step (and its remainder) entirely.
     // Likewise for the maximum clamp. This prevents the integrator from winding
     // up indefinitely when the required EFC voltage is outside the DAC range.
+    // (Electronic Frequency Control)
     const bool atMin = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
     const bool atMax = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
     const bool stepDrivesIntoMin = iStepFloor < 0.0;
