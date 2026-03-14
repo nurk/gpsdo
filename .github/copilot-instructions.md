@@ -274,6 +274,18 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - Unlocks immediately when `abs(ticCorrectedNetValueFiltered) > UNLOCK_THRESHOLD`.
 - `LOCK_LED` is driven from `ppsLocked` in the main loop after each PPS event.
 
+### log 2026-03-14-run3.log
+- First run with the integrator drift guard in `lockDetection` active. ✅
+- Mode transitions WARMUP→RUN at T604 as expected. ✅
+- **No LOCKED declaration in the entire 1369-second run** — the new integrator drift guard is working correctly. The iAccumulator is still drifting (~7–8 counts/tick at T604, slowing to ~4–5 counts/tick by T1369), so lockCount never reaches 32. ✅
+- Pull-in rate similar to run2: iAccumulator at ~32757 at T604, ~24380 at T1369 — consistent with the same OCXO and starting conditions. ✅
+- **Sawtooth clearly compressing** compared to run2: P-term is no longer clamped at ±2000 on every wrap. By T1000–T1100 most non-wrap ticks show P-term in the range ±100–1000 counts, with sawtooth spans now ~800 counts and period ~13 ticks — similar to run2 at the same point. ✅
+- `ticFrequencyError` on normal (non-wrap) ticks has reduced to ±20–100 counts by T1000+, down from ±400–600 at T604. Confirms OCXO frequency error is falling as the I-term converges. ✅
+- `ticCorrectedNetValueFiltered` oscillating between about ±60 counts and trending toward zero — same pattern as run2 at equivalent time. ✅
+- lockCount briefly reaches 1–2 on many ticks during the near-zero filtered crossings (sawtooth midpoint), but always resets because `abs(iAccumulator - iAccumulatorLast)` exceeds `LOCK_INTEGRATOR_DRIFT_MAX` (2.0) — this is exactly the new guard working as intended. ✅
+- No missed PPS events. ✅
+- **Conclusion:** the integrator drift guard successfully prevents premature lock. Lock will be declared once the iAccumulator truly settles — which requires a longer run (~2000–2500 s total based on run2 trajectory). Run longer to observe first genuine lock with the new guard active.
+
 ### Step 6 — Validate and tune
 - ✅ First lock achieved at T1179 in run2.log. Loop is working correctly.
 - `iAccumulator` still drifting slowly post-lock (~5 counts/tick) — the OCXO is not yet perfectly on-frequency at the current DAC setpoint. Run longer and observe.
