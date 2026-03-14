@@ -74,7 +74,7 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `WARMUP_TIME_DEFAULT` | 600 s | Default OCXO warm-up time |
 | `LOCK_THRESHOLD` | 50.0 | Lock declared when `abs(filtered)` stays below this for 2×ticFilterConst s |
 | `UNLOCK_THRESHOLD` | 100.0 | Lock lost immediately when `abs(filtered)` exceeds this |
-| `PTERM_MAX_COUNTS` | 200.0 | Maximum absolute DAC counts the P-term may contribute per tick |
+| `PTERM_MAX_COUNTS` | 2000.0 | Maximum absolute DAC counts the P-term may contribute per tick |
 | `LOCK_INTEGRATOR_DRIFT_MAX` | 2.0 | Maximum `abs(iAccumulator - iAccumulatorLast)` counts/tick allowed while counting toward lock |
 
 ---
@@ -342,6 +342,28 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
   - Normal near-setpoint ticks pass through unclamped — genuine frequency-error damping.
   - DAC swing from P-term now ≤ ±200 counts (±0.015 V) per tick. Appropriate scale.
 - No missed PPS events. ✅
+
+### log 2026-03-14-run6.log
+- **Run T9–T1535 (1526 seconds total).** Mode transition WARMUP→RUN at T604. ✅
+- `iAccumulator` converged from 32767 → ~24610 at T1535. Consistent with previous runs. ✅
+- **Bug identified:** P-term was using `ticFrequencyError` = `ticDelta + timerCounterError × 200`.
+  - `timerCounterError × 200` fires at ±200 ns on every GPS PPS jitter tick of ±1 count.
+  - At gain=12 that produces ±2400 DAC counts, hitting the ±200 clamp on **92% of all RUN ticks** (88% of non-wrap ticks).
+  - On `timerCounterReal=0` ticks, mean `|ticDelta|` = 100 counts (real signal). On `timerCounterReal=±1` ticks, combined `|ticFrequencyError|` = 212 counts — entirely due to the coarse term, not the OCXO.
+  - GPS PPS jitter of ±1 count is **not a real frequency error** and should not drive the P-term.
+- **Fix applied:** P-term now uses `ticDelta * gain` instead of `ticFrequencyError * gain`.
+- **Fix applied:** P-term now uses `ticDelta * gain` instead of `ticFrequencyError * gain`.
+  - `ticFrequencyError` (with coarse term) is still computed and logged for diagnostic purposes.
+  - Sawtooth wraps still produce large `ticDelta` spikes and are still clamped by `PTERM_MAX_COUNTS`.
+  - With `ticDelta` as the source, `PTERM_MAX_COUNTS` restored to **2000**: the sawtooth ramp at ~170 counts/s × gain 12 = ~2040 counts is a real signal that should pass; wrap spikes at ~500–800 counts × gain 12 = 6000–9600 are correctly clamped. The 200-count clamp was only needed because `coarseFreqError` was inflating every tick — with `ticDelta` that problem is gone.
+- No missed PPS events. ✅
+
+### Step 6 — Validate and tune (running summary)
+- run2.log: ✅ First lock at T1179. Loop confirmed working.
+- run4.log: **Anti-windup bug fixed** — `iAccumulatorLast` captured before step; I-steps into saturated rail discarded.
+- run5.log: **P-term clamp 2000→200** — clamp was firing 75% of all ticks including normal non-wrap ticks.
+- run6.log: **P-term source changed `ticFrequencyError`→`ticDelta`** — coarse counter term was firing on 92% of ticks from normal GPS PPS jitter.
+  - **`PTERM_MAX_COUNTS` restored to 2000**: with `ticDelta` as source, 2000 is the correct scale — it passes the real sawtooth ramp signal (~2040 counts) and only clips the wrap spikes (~6000–9600).
 - If the loop oscillates: increase `damping` or `timeConst`.
 - If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
 

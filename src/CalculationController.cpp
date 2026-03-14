@@ -171,13 +171,15 @@ void CalculationController::piLoop(const OpMode mode) {
     }
 
     // --- P-term ---
-    // Proportional to the frequency error (rate of phase change, ns/s ≈ ppb).
-    // This provides fast damping: when the OCXO frequency is drifting, the P-term
-    // pushes the DAC in the right direction immediately.
-    // The raw sawtooth produces frequency errors of ±400–600 counts/s, which at
-    // gain=12 would be ±5000–7000 DAC counts — far too large. Clamp to
-    // ±PTERM_MAX_COUNTS so the I-term remains in control of the long-term value.
-    double pTerm = state_.ticFrequencyError * state_.gain;
+    // Proportional to the rate of change of the fine TIC phase error (ticDelta),
+    // NOT ticFrequencyError. ticFrequencyError includes the coarse counter term
+    // (timerCounterError × 200 ns), which fires at ±200 ns on every GPS PPS jitter
+    // tick of ±1 count. At gain=12 that produces ±2400 DAC counts — hitting the
+    // clamp on almost every tick and masking the real signal.
+    // ticDelta alone is the true rate of change of the linearised phase error and
+    // is the correct signal to damp.
+    // Clamp to ±PTERM_MAX_COUNTS so sawtooth wrap spikes don't overwhelm the I-term.
+    double pTerm = state_.ticDelta * state_.gain;
     if (pTerm > PTERM_MAX_COUNTS) pTerm = PTERM_MAX_COUNTS;
     if (pTerm < -PTERM_MAX_COUNTS) pTerm = -PTERM_MAX_COUNTS;
     state_.pTerm = pTerm;
