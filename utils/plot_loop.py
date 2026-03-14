@@ -28,7 +28,6 @@ import sys
 import os
 import re
 import argparse
-import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.ticker as ticker
@@ -39,6 +38,7 @@ parser = argparse.ArgumentParser(description="Plot GPSDO loop data from a serial
 parser.add_argument("logfile", help="Path to the .log file")
 parser.add_argument("--save", action="store_true",
                     help="Save PNG next to the log file instead of opening a window")
+parser.add_argument("--f", action="store_true", help="fullscreen")
 args = parser.parse_args()
 
 if not os.path.isfile(args.logfile):
@@ -49,6 +49,7 @@ if not os.path.isfile(args.logfile):
 
 FIELD_RE = re.compile(r'([^,]+?):\s*([^,]+)')
 
+
 def parse_line(line):
     """Return dict of field→value from one log line, or None if not a data line."""
     if not line.startswith("Time:"):
@@ -57,6 +58,7 @@ def parse_line(line):
     for m in FIELD_RE.finditer(line):
         fields[m.group(1).strip()] = m.group(2).strip()
     return fields
+
 
 records = []
 lock_time = None
@@ -85,21 +87,21 @@ while i < len(lines):
 
         coarse_trim = float(d.get("Coarse Trim", 0))
         records.append({
-            "t":            t_val,
-            "mode":         mode,
-            "filtered":     float(d.get("TIC Corrected Net Value Filtered", 0)),
-            "raw":          float(d.get("TIC Corrected Net Value", 0)),
-            "acc":          float(d.get("I Accumulator", 0)),
-            "dac":          int(d.get("DAC Value", 0)),
-            "pterm":        float(d.get("P term", 0)),
-            "delta":        float(d.get("TIC delta", 0)),
-            "lockcount":    int(d.get("PPS Lock count", 0)),
-            "tc_error":     int(d.get("Timer Counter Error", 0)),
-            "freq_error":   float(d.get("TIC Frequency Error", 0)),
-            "coarse_trim":  coarse_trim,
+            "t": t_val,
+            "mode": mode,
+            "filtered": float(d.get("TIC Corrected Net Value Filtered", 0)),
+            "raw": float(d.get("TIC Corrected Net Value", 0)),
+            "acc": float(d.get("I Accumulator", 0)),
+            "dac": int(d.get("DAC Value", 0)),
+            "pterm": float(d.get("P term", 0)),
+            "delta": float(d.get("TIC delta", 0)),
+            "lockcount": int(d.get("PPS Lock count", 0)),
+            "tc_error": int(d.get("Timer Counter Error", 0)),
+            "freq_error": float(d.get("TIC Frequency Error", 0)),
+            "coarse_trim": coarse_trim,
             "coarse_accum": float(d.get("Coarse Error Accumulator", 0)),
-            "temp_ocxo":    float(d.get("Temp OCXO", 0)) if "Temp OCXO" in d else None,
-            "temp_board":   float(d.get("Temp Board", 0)) if "Temp Board" in d else None,
+            "temp_ocxo": float(d.get("Temp OCXO", 0)) if "Temp OCXO" in d else None,
+            "temp_board": float(d.get("Temp Board", 0)) if "Temp Board" in d else None,
         })
     i += 1
 
@@ -109,21 +111,21 @@ if not records:
 
 # ── Unpack into lists ─────────────────────────────────────────────────────────
 
-t            = [r["t"]            for r in records]
-filtered     = [r["filtered"]     for r in records]
-raw_tic      = [r["raw"]          for r in records]
-acc          = [r["acc"]          for r in records]
-dac          = [r["dac"]          for r in records]
-pterm        = [r["pterm"]        for r in records]
-delta        = [r["delta"]        for r in records]
-mode         = [r["mode"]         for r in records]
-lockcount    = [r["lockcount"]    for r in records]
-tc_error     = [r["tc_error"]     for r in records]
-freq_error   = [r["freq_error"]   for r in records]
-coarse_trim  = [r["coarse_trim"]  for r in records]
+t = [r["t"] for r in records]
+filtered = [r["filtered"] for r in records]
+raw_tic = [r["raw"] for r in records]
+acc = [r["acc"] for r in records]
+dac = [r["dac"] for r in records]
+pterm = [r["pterm"] for r in records]
+delta = [r["delta"] for r in records]
+mode = [r["mode"] for r in records]
+lockcount = [r["lockcount"] for r in records]
+tc_error = [r["tc_error"] for r in records]
+freq_error = [r["freq_error"] for r in records]
+coarse_trim = [r["coarse_trim"] for r in records]
 coarse_accum = [r["coarse_accum"] for r in records]
-temp_ocxo    = [r["temp_ocxo"]    for r in records]
-temp_board   = [r["temp_board"]   for r in records]
+temp_ocxo = [r["temp_ocxo"] for r in records]
+temp_board = [r["temp_board"] for r in records]
 
 has_temp = any(v is not None for v in temp_ocxo)
 
@@ -137,20 +139,20 @@ coarse_trim_v = [coarse_trim[i] for i in range(len(t)) if coarse_trim[i] != 0.0]
 
 # ── Colour scheme ─────────────────────────────────────────────────────────────
 
-C_FILTERED    = "#1f77b4"   # blue
-C_RAW         = "#aec7e8"   # light blue
-C_ACC         = "#2ca02c"   # green
-C_DAC         = "#98df8a"   # light green
-C_PTERM       = "#ff7f0e"   # orange
-C_COARSE_TRIM = "#d62728"   # red  — coarse trim steps
-C_TC_ERROR    = "#9467bd"   # purple — timer counter error
-C_COARSE_ACC  = "#c5b0d5"   # light purple — coarse accumulator
-C_TEMP_OCXO   = "#e377c2"   # pink
-C_TEMP_BOARD  = "#f7b6d2"   # light pink
-C_WARMUP      = "#ffeedd"
-C_RUN         = "#edfff0"
-C_LOCK        = "#d4efff"
-C_VLINE       = "#666666"
+C_FILTERED = "#1f77b4"  # blue
+C_RAW = "#aec7e8"  # light blue
+C_ACC = "#2ca02c"  # green
+C_DAC = "#98df8a"  # light green
+C_PTERM = "#ff7f0e"  # orange
+C_COARSE_TRIM = "#d62728"  # red  — coarse trim steps
+C_TC_ERROR = "#9467bd"  # purple — timer counter error
+C_COARSE_ACC = "#c5b0d5"  # light purple — coarse accumulator
+C_TEMP_OCXO = "#e377c2"  # pink
+C_TEMP_BOARD = "#f7b6d2"  # light pink
+C_WARMUP = "#ffeedd"
+C_RUN = "#edfff0"
+C_LOCK = "#d4efff"
+C_VLINE = "#666666"
 
 # ── Figure layout ─────────────────────────────────────────────────────────────
 
@@ -165,6 +167,7 @@ fig.subplots_adjust(hspace=0.08, top=0.96, bottom=0.05, left=0.08, right=0.97)
 
 t_min, t_max = t[0], t[-1]
 
+
 def shade_regions(ax):
     ax.axvspan(t_min, run_start_time or t_max, alpha=0.25, color=C_WARMUP, zorder=0)
     if run_start_time is not None:
@@ -173,33 +176,35 @@ def shade_regions(ax):
     if lock_time is not None:
         ax.axvspan(lock_time, t_max, alpha=0.25, color=C_LOCK, zorder=0)
 
+
 def add_vlines(ax):
     if run_start_time is not None:
         ax.axvline(run_start_time, color=C_VLINE, lw=1.0, ls="--", zorder=3)
     if lock_time is not None:
         ax.axvline(lock_time, color="steelblue", lw=1.2, ls="-", zorder=3)
 
+
 # ── Panel 1: Filtered + raw phase error ──────────────────────────────────────
 
 ax1 = axes[0]
 shade_regions(ax1)
 add_vlines(ax1)
-ax1.axhline(0,    color="black",    lw=0.5, zorder=2)
-ax1.axhline( 50,  color=C_FILTERED, lw=0.6, ls=":", alpha=0.6, zorder=2)
-ax1.axhline(-50,  color=C_FILTERED, lw=0.6, ls=":", alpha=0.6, zorder=2)
-ax1.axhline( 100, color=C_FILTERED, lw=0.5, ls=":", alpha=0.35, zorder=2)
+ax1.axhline(0, color="black", lw=0.5, zorder=2)
+ax1.axhline(50, color=C_FILTERED, lw=0.6, ls=":", alpha=0.6, zorder=2)
+ax1.axhline(-50, color=C_FILTERED, lw=0.6, ls=":", alpha=0.6, zorder=2)
+ax1.axhline(100, color=C_FILTERED, lw=0.5, ls=":", alpha=0.35, zorder=2)
 ax1.axhline(-100, color=C_FILTERED, lw=0.5, ls=":", alpha=0.35, zorder=2)
-ax1.plot(t, raw_tic,  color=C_RAW,      lw=0.4, alpha=0.5, label="Raw TIC corrected net value (sawtooth)")
-ax1.plot(t, filtered, color=C_FILTERED, lw=1.2,             label="Filtered / EMA (I-term input)")
+ax1.plot(t, raw_tic, color=C_RAW, lw=0.4, alpha=0.5, label="Raw TIC corrected net value (sawtooth)")
+ax1.plot(t, filtered, color=C_FILTERED, lw=1.2, label="Filtered / EMA (I-term input)")
 ax1.set_ylabel("Phase error\n(linearised TIC counts)", fontsize=9)
 ax1.legend(loc="upper right", fontsize=8)
 ax1.yaxis.set_minor_locator(ticker.AutoMinorLocator())
 ax1.grid(True, which="major", alpha=0.3)
 ax1.grid(True, which="minor", alpha=0.1)
-ax1.text(t_max, 50,   "  ±50 lock",   va="center", fontsize=7, color=C_FILTERED, alpha=0.8)
-ax1.text(t_max, -50,  "  ±50 lock",   va="center", fontsize=7, color=C_FILTERED, alpha=0.8)
-ax1.text(t_max, 100,  "  ±100 unlock",va="center", fontsize=7, color=C_FILTERED, alpha=0.5)
-ax1.text(t_max, -100, "  ±100 unlock",va="center", fontsize=7, color=C_FILTERED, alpha=0.5)
+ax1.text(t_max, 50, "  ±50 lock", va="center", fontsize=7, color=C_FILTERED, alpha=0.8)
+ax1.text(t_max, -50, "  ±50 lock", va="center", fontsize=7, color=C_FILTERED, alpha=0.8)
+ax1.text(t_max, 100, "  ±100 unlock", va="center", fontsize=7, color=C_FILTERED, alpha=0.5)
+ax1.text(t_max, -100, "  ±100 unlock", va="center", fontsize=7, color=C_FILTERED, alpha=0.5)
 
 # ── Panel 2: I Accumulator + DAC output ──────────────────────────────────────
 
@@ -241,8 +246,8 @@ ax3.set_ylabel("P term\n(DAC counts)", fontsize=9, color=C_PTERM)
 ax3_r.set_ylabel("Coarse trim\n(DAC counts)", fontsize=9, color=C_COARSE_TRIM)
 ax3.tick_params(axis="y", labelcolor=C_PTERM)
 ax3_r.tick_params(axis="y", labelcolor=C_COARSE_TRIM)
-lines3 = [mpatches.Patch(color=C_PTERM,       label="P term (ticDelta × gain, clamped ±2000)"),
-          mpatches.Patch(color=C_COARSE_TRIM,  label="Coarse trim applied (every coarseTrimPeriod s)")]
+lines3 = [mpatches.Patch(color=C_PTERM, label="P term (ticDelta × gain, clamped ±2000)"),
+          mpatches.Patch(color=C_COARSE_TRIM, label="Coarse trim applied (every coarseTrimPeriod s)")]
 ax3.legend(handles=lines3, loc="upper right", fontsize=8)
 ax3.yaxis.set_minor_locator(ticker.AutoMinorLocator())
 ax3.grid(True, which="major", alpha=0.3)
@@ -254,7 +259,7 @@ ax4 = axes[3]
 shade_regions(ax4)
 add_vlines(ax4)
 ax4.axhline(0, color="black", lw=0.5, zorder=2)
-ax4.plot(t, tc_error,     color=C_TC_ERROR,   lw=0.7, alpha=0.85,
+ax4.plot(t, tc_error, color=C_TC_ERROR, lw=0.7, alpha=0.85,
          label="Timer Counter Error (coarse freq error, counts)")
 ax4_r = ax4.twinx()
 ax4_r.plot(t, coarse_accum, color=C_COARSE_ACC, lw=1.0, alpha=0.8,
@@ -263,8 +268,8 @@ ax4.set_ylabel("Timer Counter\nError (counts)", fontsize=9, color=C_TC_ERROR)
 ax4_r.set_ylabel("Coarse Error\nAccumulator", fontsize=9, color=C_COARSE_ACC)
 ax4.tick_params(axis="y", labelcolor=C_TC_ERROR)
 ax4_r.tick_params(axis="y", labelcolor=C_COARSE_ACC)
-lines4 = [mpatches.Patch(color=C_TC_ERROR,   label="Timer Counter Error (per tick)"),
-          mpatches.Patch(color=C_COARSE_ACC,  label="Coarse Error Accumulator")]
+lines4 = [mpatches.Patch(color=C_TC_ERROR, label="Timer Counter Error (per tick)"),
+          mpatches.Patch(color=C_COARSE_ACC, label="Coarse Error Accumulator")]
 ax4.legend(handles=lines4, loc="upper right", fontsize=8)
 ax4.yaxis.set_minor_locator(ticker.AutoMinorLocator())
 ax4.grid(True, which="major", alpha=0.3)
@@ -279,11 +284,11 @@ if has_temp:
     ax5 = axes[4]
     shade_regions(ax5)
     add_vlines(ax5)
-    t_ocxo_valid  = [(t[i], temp_ocxo[i])  for i in range(len(t)) if temp_ocxo[i]  is not None]
+    t_ocxo_valid = [(t[i], temp_ocxo[i]) for i in range(len(t)) if temp_ocxo[i] is not None]
     t_board_valid = [(t[i], temp_board[i]) for i in range(len(t)) if temp_board[i] is not None]
     if t_ocxo_valid:
-        ax5.plot([x[0] for x in t_ocxo_valid],  [x[1] for x in t_ocxo_valid],
-                 color=C_TEMP_OCXO,  lw=1.0, label="OCXO temperature (°C)")
+        ax5.plot([x[0] for x in t_ocxo_valid], [x[1] for x in t_ocxo_valid],
+                 color=C_TEMP_OCXO, lw=1.0, label="OCXO temperature (°C)")
     if t_board_valid:
         ax5.plot([x[0] for x in t_board_valid], [x[1] for x in t_board_valid],
                  color=C_TEMP_BOARD, lw=1.0, label="Board temperature (°C)")
@@ -296,7 +301,7 @@ if has_temp:
 
 # ── Global annotations ────────────────────────────────────────────────────────
 
-ax1.get_figure().canvas.draw()   # force layout so get_ylim() is valid
+ax1.get_figure().canvas.draw()  # force layout so get_ylim() is valid
 y_top = ax1.get_ylim()[1]
 x_ann_off = (t_max - t_min) * 0.01
 
@@ -316,8 +321,8 @@ if lock_time is not None:
 
 # Mode legend at the bottom
 warmup_patch = mpatches.Patch(color=C_WARMUP, alpha=0.7, label="WARMUP mode")
-run_patch    = mpatches.Patch(color=C_RUN,    alpha=0.7, label="RUN mode")
-lock_patch   = mpatches.Patch(color=C_LOCK,   alpha=0.7, label="LOCKED")
+run_patch = mpatches.Patch(color=C_RUN, alpha=0.7, label="RUN mode")
+lock_patch = mpatches.Patch(color=C_LOCK, alpha=0.7, label="LOCKED")
 fig.legend(handles=[warmup_patch, run_patch, lock_patch],
            loc="lower center", ncol=3, fontsize=8,
            bbox_to_anchor=(0.5, 0.005), framealpha=0.8)
@@ -329,5 +334,7 @@ if args.save:
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {out_path}")
 else:
+    if args.f:
+        figManager = plt.get_current_fig_manager()
+        figManager.full_screen_toggle()  # try to open maximized for better visibility
     plt.show()
-
