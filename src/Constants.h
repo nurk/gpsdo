@@ -70,6 +70,7 @@ struct ControlState {
     double ticFrequencyError = 0.0;
     bool ticFilterSeeded = false;       // true after the EMA has been seeded with the first real measurement
     int32_t ticFilterConst = 16;
+    double ticDelta = 0.0;
 
     // --- PI loop state ---
     double iAccumulator = DAC_MAX_VALUE / 2.0; // integrator state (DAC counts); initialised to mid-scale

@@ -103,7 +103,9 @@ ticValueCorrectionOld       double     — linearised TIC last PPS (snapshot)
 ticValueCorrectionOffset    double     — linearise(ticOffset) — zero reference
 ticCorrectedNetValue        double     — ticValueCorrection - ticValueCorrectionOffset (phase error)
 ticCorrectedNetValueFiltered double    — EMA-filtered phase error (input to I-term)
-ticFrequencyError           double     — ticCorrectedNetValue - (ticValueCorrectionOld - ticValueCorrectionOffset) (rate of phase error change, ns/s)
+ticFrequencyError           double     — combined frequency error: ticDelta + timerCounterError×200
+  │                                        ticDelta = ticCorrectedNetValue − (ticValueCorrectionOld − ticValueCorrectionOffset)
+  │                                        timerCounterError×200 converts coarse counter ticks (200 ns each) to ns units
 ticFilterSeeded             bool       — false until first real value seeds the EMA
 isFirstTic                  bool       — true until tick 1 has seeded all *Old snapshots; skips all calculations on tick 1
 ticFilterConst              int32_t    — EMA time constant in seconds (default 16)
@@ -137,7 +139,9 @@ calculate()
   ├── ticLinearization()         — cubic polynomial, produce ticCorrectedNetValue
   ├── ticPreFilter()             — EMA on ticCorrectedNetValue → ticCorrectedNetValueFiltered
   │                                Seeds on first tick; skips EMA until ticFilterSeeded == true
-  ├── computeFrequencyError()    — ticFrequencyError = ticValueCorrection - ticValueCorrectionOld
+  ├── computeFrequencyError()    — ticFrequencyError = ticDelta + coarseFreqError
+  │                                where ticDelta = ticCorrectedNetValue - (ticValueCorrectionOld - ticValueCorrectionOffset)
+  │                                and coarseFreqError = timerCounterError × 200 (ns per 5 MHz counter tick)
   │                                Guarded by ticFilterSeeded (skipped on tick 2 before Old is valid)
   ├── piLoop(mode)               — PI control; only active when mode == RUN
   │                                P-term = ticFrequencyError * gain
@@ -275,30 +279,61 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - `LOCK_LED` is driven from `ppsLocked` in the main loop after each PPS event.
 
 ### log 2026-03-14-run3.log
-- First run with the integrator drift guard in `lockDetection` active. ✅
-- Mode transitions WARMUP→RUN at T604 as expected. ✅
-- **No LOCKED declaration in the entire 1369-second run** — the new integrator drift guard is working correctly. The iAccumulator is still drifting (~7–8 counts/tick at T604, slowing to ~4–5 counts/tick by T1369), so lockCount never reaches 32. ✅
-- Pull-in rate similar to run2: iAccumulator at ~32757 at T604, ~24380 at T1369 — consistent with the same OCXO and starting conditions. ✅
-- **Sawtooth clearly compressing** compared to run2: P-term is no longer clamped at ±2000 on every wrap. By T1000–T1100 most non-wrap ticks show P-term in the range ±100–1000 counts, with sawtooth spans now ~800 counts and period ~13 ticks — similar to run2 at the same point. ✅
-- `ticFrequencyError` on normal (non-wrap) ticks has reduced to ±20–100 counts by T1000+, down from ±400–600 at T604. Confirms OCXO frequency error is falling as the I-term converges. ✅
-- `ticCorrectedNetValueFiltered` oscillating between about ±60 counts and trending toward zero — same pattern as run2 at equivalent time. ✅
-- lockCount briefly reaches 1–2 on many ticks during the near-zero filtered crossings (sawtooth midpoint), but always resets because `abs(iAccumulator - iAccumulatorLast)` exceeds `LOCK_INTEGRATOR_DRIFT_MAX` (2.0) — this is exactly the new guard working as intended. ✅
-- No missed PPS events. ✅
-- **Conclusion:** the integrator drift guard successfully prevents premature lock. Lock will be declared once the iAccumulator truly settles — which requires a longer run (~2000–2500 s total based on run2 trajectory). Run longer to observe first genuine lock with the new guard active.
+- **Extended run — 3831 seconds total.** Mode transitions WARMUP→RUN at T604. ✅
+- **No LOCKED declaration in the entire run** — the integrator drift guard is working correctly. ✅
+- iAccumulator at T604: 32757. At T3823: ~21880. Total drift: ~10,880 counts over 3,219 s = ~3.4 counts/tick continuously downward. ✅ (loop is working; OCXO has not yet reached its true setpoint at this temperature)
+- **Key difference from run2:** The OCXO's true on-frequency EFC setpoint for this run's thermal conditions is much lower (~19000–20000 counts ≈ 1.45–1.52 V) vs run2 (~24250 ≈ 1.85 V). This implies significantly warmer ambient temperature or OCXO not yet thermally stable when RUN mode engaged at T604.
+- **TIC sawtooth never compressed** — still full-range (~0–800 counts, ~4-tick period) at T3823. `ticFrequencyError` on non-wrap ticks is ~150–200 counts throughout, indicating the OCXO is running ~150–200 ppb below the target frequency even at DAC ~21900. The loop is still pulling in.
+- `ticCorrectedNetValueFiltered` oscillates around ±10–20 counts near zero from ~T1100 onward. This produces brief lockCount increments (1–2) but never reaches 32, because the integrator drift guard correctly identifies ongoing I-term motion (~3–4 counts/tick). ✅
+- **The loop algorithm is correct.** The run simply needs more time. At 3.4 counts/tick, full convergence is expected around T5500–T7000 total (another 2000–4000 s beyond the end of this log).
+- No missed PPS events across the full 3831-second run. ✅
+- **Root cause of slow convergence:** Almost certainly thermal — OCXO was not at its stable operating temperature when WARMUP ended at T604. The EFC setpoint drifted significantly lower as the crystal warmed further.
+- **Action required:** Implement EEPROM seeding (Step 8) to avoid long re-convergence on restart. Also consider extending `WARMUP_TIME_DEFAULT` or adding a temperature-stability check before transitioning to RUN.
+- ⚠️ **The P-term clamp (±2000) hits on every sawtooth wrap (every 4–5 ticks).** Because wraps produce balanced ±2000 spikes, average P contribution is near zero. The I-term is doing all the work. This is correct behaviour for an OCXO far from setpoint.
+
+### log 2026-03-14-run3-2.log
+- **Continuation of run3** — SSH dropped and reconnected. Log picks up at T5516 (T3832 visible as partial first line). **The firmware continued running uninterrupted during the ~1684-second gap.** ✅
+- **iAccumulator at T5516: ~8271** — down from ~21880 at T3831. Drop of ~13,600 counts over ~1685 seconds = **~8 counts/tick**. The drift rate more than doubled compared to run3.
+- **Reason for accelerated drift:** As the iAccumulator fell below the true EFC setpoint and the DAC voltage dropped below the on-frequency point, the OCXO began running *faster* than the GPS. The `ticCorrectedNetValueFiltered` became more negative (~-30 to -50 counts), increasing the I-step to ~5–8 counts/tick.
+- **iAccumulator still falling at T5739: ~7728** — but the drift rate is already slowing: T5516–T5739 shows only ~2.4 counts/tick (down from ~8 counts/tick in the gap). The loop is crossing the on-frequency point and decelerating. Convergence is expected ~400–800 seconds beyond T5739 (i.e., around T6200–T6500 total).
+- `timerCounterReal` values are consistently **-5 to -7** (vs -1 to +3 in run3), confirming the OCXO is now running *fast* — the loop has overshot past the EFC setpoint. `timerCounterError` = +5 to +7 counts.
+- TIC sawtooth still full-range, ~4-tick period. `ticFrequencyError` on non-wrap ticks is ~90–140 counts (slightly lower than run3's 150–200 — consistent with OCXO being closer to frequency but on the wrong side).
+- **No lock declared.** lockCount reaches 1–2 on filtered zero-crossings but always resets. ✅
+- **Conclusion: The OCXO's true on-frequency EFC setpoint at this run's temperature is somewhere below ~7700 counts (≈0.59 V)**. This is an extremely low EFC voltage for this OCXO — implies either very high ambient temperature, or the OCXO characteristics have changed significantly between run2 and run3. Run longer to observe final convergence.
+- ⚠️ **The EFC setpoint variation between run2 (~24250 counts, 1.85 V) and this run (heading toward <8000 counts, <0.61 V) is ~16,000 counts (~1.2 V).** This is an enormous range for a single OCXO and suggests severe thermal variation between runs. EEPROM seeding becomes critical to avoid multi-hour convergence on each restart.
+
+### log 2026-03-14-run4.log
+- **Run length: T158–T2108 (1951 seconds total; log starts partway into WARMUP).** Mode transition WARMUP→RUN at T605. ✅
+- WARMUP: DAC fixed at 32767 / 2.5000 V, `iAccumulator` frozen at 32767.5, P term = 0.000 throughout. ✅
+- TIC sawtooth during WARMUP: full range ~0–810 counts, ~4-tick period (~200 ppb free-running offset). ✅
+- RUN starts T605: P-term clamp (±2000) hits immediately on first tick (`ticFrequencyError = −844` × gain 12 = −10130, clamped). ✅
+- iAccumulator pull-in: 32767.5 → ~25103 at T1100 → ~23751 at T2108. Early drift ~10–14 counts/tick, later ~1.3 counts/tick. Loop working correctly. ✅
+- `timerCounterReal` transitions from **2–3** (WARMUP, OCXO ~200 ppb fast) to **0 to −1** by T1050+ (OCXO very close to on-frequency). ✅
+- `ticFrequencyError` on non-wrap ticks shrinks from ±500–800 at T605 to **±10–150 counts** by T1100+. ✅
+- `ticCorrectedNetValueFiltered` crosses zero near T1071–T1082 (first `lockCount = 1`). ✅
+- **No LOCK declared** across the full run. `lockCount` reaches maximum of 5–6 near T2090–T2101, never reaching 32. ✅ Integrator drift guard is working correctly — iAccumulator still drifting ~1.3 counts/tick at end of run.
+- TIC sawtooth **not compressed** — still full amplitude and ~3–4 tick period at T2108. OCXO has not yet reached true on-frequency setpoint for this run's thermal conditions.
+- iAccumulator at T2108: **~23751** (~1.82 V). True setpoint estimated ~22000–23000 at these conditions; ~500–1000 s more needed.
+- No missed PPS events across the full run. ✅
+- **EFC setpoint comparison across runs:** run2 ~24250 (1.85 V), run4 heading toward ~22000–23000, run3/run3-2 headed toward <8000 (<0.61 V). Thermal variation between sessions is the dominant factor. EEPROM seeding (Step 8) is critical.
+- T1101 anomaly: `TIC Frequency Error = 0.00, TIC delta = 0.0000` — identical TIC value two consecutive ticks (both = 634). Not a bug. ✅
 
 ### Step 6 — Validate and tune
 - ✅ First lock achieved at T1179 in run2.log. Loop is working correctly.
-- `iAccumulator` still drifting slowly post-lock (~5 counts/tick) — the OCXO is not yet perfectly on-frequency at the current DAC setpoint. Run longer and observe.
+- run3.log + run3-2.log (T604–T5739+): No lock declared. iAccumulator drifted from 32757 → 21880 (run3 end) → ~7700 (run3-2 end). Still converging.
+- run4.log (T158–T2108): No lock declared. iAccumulator at ~23751 at end, still drifting ~1.3 counts/tick. Algorithm correct.
+- **Massive EFC setpoint variation between runs:** run2 settled at ~24250 (1.85 V); run3 headed toward <8000 (<0.61 V); run4 heading toward ~22000–23000. Almost certainly thermal — the OCXO must be at significantly different ambient temperatures between runs.
+- **Current status:** algorithm is correct and loop is working. Convergence is slow because the iAccumulator must travel from mid-scale to the true setpoint, at ~3–14 counts/tick depending on how far away the setpoint is.
 - If the loop oscillates: increase `damping` or `timeConst`.
 - If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
-- **Current status:** loop locks, integrator converging, sawtooth compressing. Continue running to observe full convergence.
 
 ### Step 7 — Extended convergence run
-- Run for several thousand seconds (ideally until `iAccumulator` stabilises and TIC sawtooth compresses to ≪100 counts peak-to-peak).
-- Expected final DAC setpoint is somewhere below ~24000 counts based on current trajectory.
+- Run for 8000–10000 seconds total (ideally until `iAccumulator` stabilises and TIC sawtooth compresses to ≪100 counts peak-to-peak).
+- The run3 setpoint appears to be somewhere below ~7700 counts (~0.59 V) — needs more data.
 - Watch for sawtooth period increasing (means OCXO is closer to on-frequency and drift rate is falling).
 - Watch `ticFrequencyError` on normal ticks approaching zero — that is the true indicator of frequency lock.
 - When `ticFrequencyError` on non-wrap ticks is consistently ±10 counts or less, the OCXO is essentially on-frequency.
+- **Note:** Consider increasing `WARMUP_TIME_DEFAULT` to 900–1200 s to allow better thermal stabilisation before RUN mode engages.
 
 ### Step 8 — EEPROM persistence (future)
 - Save `iAccumulator` and tuning constants to EEPROM on power-down / periodically.

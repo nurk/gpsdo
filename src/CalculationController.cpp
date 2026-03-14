@@ -49,6 +49,8 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(state_.ticCorrectedNetValueFiltered);
     Serial2.print(F(", TIC Frequency Error: "));
     Serial2.print(state_.ticFrequencyError);
+    Serial2.print(F(", TIC delta: "));
+    Serial2.print(state_.ticDelta, 4);
     Serial2.print(F(", I Accumulator: "));
     Serial2.print(state_.iAccumulator, 4);
     Serial2.print(F(", P term: "));
@@ -140,11 +142,23 @@ void CalculationController::ticPreFilter() {
 
 void CalculationController::computeFrequencyError() {
     if (state_.ticFilterSeeded) {
-        // Rate of change of the phase error (counts/second ≈ ns/s ≈ ppb).
+        // Rate of change of the fine (TIC) phase error component.
         // Uses the offset-subtracted value so the zero point is consistent with
         // ticCorrectedNetValue and ticCorrectedNetValueFiltered.
-        state_.ticFrequencyError = state_.ticCorrectedNetValue - (state_.ticValueCorrectionOld - state_.
+        const double ticDelta = state_.ticCorrectedNetValue - (state_.ticValueCorrectionOld - state_.
             ticValueCorrectionOffset);
+
+        state_.ticDelta = ticDelta;
+
+        // timerCounterError is the coarse frequency error: how many 5 MHz counter ticks
+        // (each = 200 ns) the OCXO gained or lost this second vs the GPS PPS.
+        // Converting to the same units as ticDelta (linearised TIC counts ≈ ns):
+        //   timerCounterError × 200 ns/count
+        // This term captures frequency offsets that cause complete TIC wrap-arounds and
+        // that ticDelta alone cannot see cleanly on every tick.
+        const double coarseFreqError = static_cast<double>(state_.timerCounterError) * 200.0;
+
+        state_.ticFrequencyError = ticDelta + coarseFreqError;
     }
 }
 
