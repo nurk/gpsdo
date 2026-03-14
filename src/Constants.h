@@ -107,16 +107,11 @@ constexpr double TIC_MIN = 12.0;
 constexpr double TIC_MAX = 1012.0;
 
 // Lock detection thresholds (in linearised TIC counts, same units as ticCorrectedNetValueFiltered)
-// Lock is declared after LOCK_COUNT_THRESHOLD consecutive seconds below LOCK_THRESHOLD.
+// Lock is declared after 2 × ticFilterConst consecutive seconds below LOCK_THRESHOLD.
 // Unlock occurs immediately when the filtered error exceeds UNLOCK_THRESHOLD (hysteresis).
 constexpr double LOCK_THRESHOLD   = 50.0;   // filtered phase error must stay within ±50 counts to declare lock
 constexpr double UNLOCK_THRESHOLD = 100.0;  // filtered phase error must exceed ±100 counts to declare unlock
 
-// Maximum absolute iAccumulator change per tick (DAC counts) that is allowed while
-// counting toward lock.  While the integrator is still pulling in (e.g. 5+ counts/tick)
-// the loop has not converged and a lock declaration would be premature.
-// At the settled setpoint the I-step should be < 1 count/tick.
-constexpr double LOCK_INTEGRATOR_DRIFT_MAX = 2.0;
 
 // Maximum P-term contribution in DAC counts per tick.
 // The raw TIC sawtooth spans ~500 counts/s × gain 12 = ~6000 counts, which would

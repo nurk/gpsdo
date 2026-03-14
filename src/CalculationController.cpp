@@ -267,16 +267,19 @@ void CalculationController::lockDetection(const OpMode mode) {
         }
     }
     else {
-        // Not yet locked — both conditions must hold to count toward lock:
-        //   1. Filtered phase error within ±LOCK_THRESHOLD (loop is near zero phase error).
-        //   2. Integrator drift < LOCK_INTEGRATOR_DRIFT_MAX counts/tick (loop has converged —
-        //      the integrator is no longer pulling in).
-        // Either excursion resets the counter.
-        const double iDrift = abs(state_.iAccumulator - state_.iAccumulatorLast);
+        // Not yet locked — the filtered phase error must stay within ±LOCK_THRESHOLD
+        // for 2 × ticFilterConst consecutive seconds to declare lock.
+        //
+        // The original iDrift guard (|iAccumulator - iAccumulatorLast| < LOCK_INTEGRATOR_DRIFT_MAX)
+        // was intended to block premature lock while the integrator is still pulling in.
+        // However once the integrator has converged, the I-step still oscillates ±(filtered*0.125)
+        // each tick, tracking the TIC sawtooth — so iDrift routinely exceeds the threshold even
+        // when the mean drift is near zero. This permanently blocks lock declaration.
+        // The EMA filter staying within ±LOCK_THRESHOLD for 2×ticFilterConst seconds already
+        // provides sufficient confidence that the loop has settled. No separate drift guard needed.
         const bool phaseOk = absFiltered < LOCK_THRESHOLD;
-        const bool integratorOk = iDrift < LOCK_INTEGRATOR_DRIFT_MAX;
 
-        if (phaseOk && integratorOk) {
+        if (phaseOk) {
             state_.ppsLockCount++;
 
             // Require 2 × ticFilterConst consecutive seconds before declaring lock.

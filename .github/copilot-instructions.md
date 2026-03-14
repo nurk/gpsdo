@@ -75,7 +75,6 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `LOCK_THRESHOLD` | 50.0 | Lock declared when `abs(filtered)` stays below this for 2×ticFilterConst s |
 | `UNLOCK_THRESHOLD` | 100.0 | Lock lost immediately when `abs(filtered)` exceeds this |
 | `PTERM_MAX_COUNTS` | 2000.0 | Maximum absolute DAC counts the P-term may contribute per tick |
-| `LOCK_INTEGRATOR_DRIFT_MAX` | 2.0 | Maximum `abs(iAccumulator - iAccumulatorLast)` counts/tick allowed while counting toward lock |
 
 ---
 
@@ -149,13 +148,14 @@ calculate()
   │                                iAccumulator clamped to [dacMinValue, dacMaxValue]
   │                                dacOutput = iAccumulator + pTerm, clamped, written via setDac_()
   ├── lockDetection(mode)        — only active when mode == RUN
-  │                                Counts consecutive seconds where BOTH conditions hold:
-  │                                  1. abs(ticCorrectedNetValueFiltered) < LOCK_THRESHOLD (50)
-  │                                  2. abs(iAccumulator - iAccumulatorLast) < LOCK_INTEGRATOR_DRIFT_MAX (2)
+  │                                Counts consecutive seconds where abs(ticCorrectedNetValueFiltered) < LOCK_THRESHOLD (50)
   │                                Declares lock after lockCount ≥ 2 × ticFilterConst
   │                                Declares unlock immediately when abs(filtered) > UNLOCK_THRESHOLD (100)
   │                                Resets ppsLocked and lockCount when leaving RUN mode
   │                                Drives LOCK_LED via ppsLocked (written in main loop)
+  │                                Note: iDrift guard removed — once converged, per-tick I-step oscillates
+  │                                with the TIC sawtooth and always exceeds the old threshold even when
+  │                                the mean accumulator drift is ~zero. Phase condition alone is sufficient.
   └── updateSnapshots()          — copy current values to *Old fields
 ```
 
@@ -364,6 +364,26 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - run5.log: **P-term clamp 2000→200** — clamp was firing 75% of all ticks including normal non-wrap ticks.
 - run6.log: **P-term source changed `ticFrequencyError`→`ticDelta`** — coarse counter term was firing on 92% of ticks from normal GPS PPS jitter.
   - **`PTERM_MAX_COUNTS` restored to 2000**: with `ticDelta` as source, 2000 is the correct scale — it passes the real sawtooth ramp signal (~2040 counts) and only clips the wrap spikes (~6000–9600).
+- If the loop oscillates: increase `damping` or `timeConst`.
+- If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
+
+### log 2026-03-14-run7.log
+- **Run T24–T1608 (1584 seconds total).** Mode transition WARMUP→RUN at T604. ✅
+- `iAccumulator` converged from 32767 → ~24223 by T1608. Consistent with previous runs (~24250). ✅
+- `iAccumulator` drift rate by end of run: **+0.08/tick** — essentially zero. Loop fully converged. ✅
+- `timerCounterReal` oscillating ±1–2 — OCXO very close to on-frequency. ✅
+- **No lock declared** — `ppsLockCount` reached maximum of **7** consecutive OK ticks vs required 32. ⚠️
+- **Root cause:** `LOCK_INTEGRATOR_DRIFT_MAX` guard was the blocker. Once converged, the I-step oscillates ±(filtered×0.125) each tick following the TIC sawtooth. Even though the *mean* drift is ~0.08/tick, the *per-tick* step is ±7.5 counts — permanently above the 2.0-count threshold. The guard was correctly rejecting premature lock during pull-in but incorrectly blocking lock after convergence.
+- **Separately:** even with only the phase condition, max consecutive `|filtered|<50` was **30 ticks** — just 2 short of the 32 threshold. The loop was essentially locked but the count kept resetting when the TIC sawtooth swung the EMA above ±50.
+- **Fix applied:** `LOCK_INTEGRATOR_DRIFT_MAX` guard removed from `lockDetection()`. Lock now requires only `|filtered| < LOCK_THRESHOLD` for `2 × ticFilterConst` consecutive seconds. `LOCK_INTEGRATOR_DRIFT_MAX` constant removed from `Constants.h`.
+
+### Step 6 — Validate and tune (running summary)
+- run2.log: ✅ First lock at T1179. Loop confirmed working.
+- run4.log: **Anti-windup bug fixed** — `iAccumulatorLast` captured before step; I-steps into saturated rail discarded.
+- run5.log: **P-term clamp 2000→200** — clamp was firing 75% of all ticks including normal non-wrap ticks.
+- run6.log: **P-term source changed `ticFrequencyError`→`ticDelta`** — coarse counter term was firing on 92% of ticks from normal GPS PPS jitter.
+  - **`PTERM_MAX_COUNTS` restored to 2000**: with `ticDelta` as source, 2000 is the correct scale — it passes the real sawtooth ramp signal (~2040 counts) and only clips the wrap spikes (~6000–9600).
+- run7.log: **iDrift guard removed from `lockDetection()`** — per-tick I-step always exceeds `LOCK_INTEGRATOR_DRIFT_MAX` once converged due to TIC sawtooth oscillation, even though mean drift is ~zero.
 - If the loop oscillates: increase `damping` or `timeConst`.
 - If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
 
