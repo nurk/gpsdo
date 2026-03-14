@@ -104,6 +104,15 @@ ticFilterSeeded             bool       — false until first real value seeds th
 isFirstTic                  bool       — true until tick 1 has seeded all *Old snapshots; skips all calculations on tick 1
 ticFilterConst              int32_t    — EMA time constant in seconds (default 16)
 
+iAccumulator                double     — integrator state in DAC counts; initialised to mid-scale (32767)
+iRemainder                  double     — fractional carry-forward for I-step to avoid truncation drift
+timeConst                   int32_t    — loop time constant in seconds (default 32)
+gain                        double     — DAC counts per linearised TIC count / EFC sensitivity (default 12.0)
+damping                     double     — P/I ratio; higher = more damped, slower pull-in (default 3.0)
+
+dacMinValue                 uint16_t   — lower DAC safety limit (default 0)
+dacMaxValue                 uint16_t   — upper DAC safety limit (default 65535)
+
 ticOffset                   double     — expected mid-point of TIC range (default 500.0)
 x2Coefficient               double     — quadratic linearisation coeff (stored pre-scaled /1000)
 x3Coefficient               double     — cubic linearisation coeff (stored pre-scaled /100000)
@@ -122,6 +131,11 @@ calculate()
   │                                Seeds on first tick; skips EMA until ticFilterSeeded == true
   ├── computeFrequencyError()    — ticFrequencyError = ticValueCorrection - ticValueCorrectionOld
   │                                Guarded by ticFilterSeeded (skipped on tick 2 before Old is valid)
+  ├── piLoop(mode)               — PI control; only active when mode == RUN
+  │                                P-term = ticFrequencyError * gain
+  │                                I-step = ticCorrectedNetValueFiltered * gain / damping / timeConst
+  │                                iAccumulator clamped to [dacMinValue, dacMaxValue]
+  │                                dacOutput = iAccumulator + pTerm, clamped, written via setDac_()
   └── updateSnapshots()          — copy current values to *Old fields
 ```
 
@@ -187,19 +201,27 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 
 ### ~~Step 2 — Frequency error (`ticFrequencyError`)~~ ✅ Done (validated in run4.log)
 
-### Step 3 — PI control loop ← current step
-- Add to `ControlState`: `iAccumulator` (double), `iRemainder` (double),
+### ~~Step 3 — PI control loop~~ ✅ Done (awaiting validation run)
+- Added to `ControlState`: `iAccumulator` (double, init mid-scale), `iRemainder` (double),
   `timeConst` (int32_t, default 32), `gain` (double, default 12.0),
-  `damping` (double, default 3.0).
-- Add private method `piControl(OpMode mode)` to `CalculationController`.
-- Only execute when `mode == RUN` and after warmup.
-- P-term on `ticFrequencyError`; I-term on `ticCorrectedNetValueFiltered`.
-- Clamp `iAccumulator` to prevent wind-up.
-- Call `setDac_()` with clamped result.
+  `damping` (double, default 3.0), `dacMinValue` / `dacMaxValue` (uint16_t, 0 / 65535).
+- Private method `piLoop(OpMode mode)` implemented in `CalculationController`.
+- Only executes when `mode == RUN`.
+- P-term = `ticFrequencyError * gain`; I-step = `ticCorrectedNetValueFiltered * gain / damping / timeConst`.
+- Fractional I-step carried forward in `iRemainder` to avoid truncation drift.
+- `iAccumulator` clamped to `[dacMinValue, dacMaxValue]` to prevent wind-up.
+- Final `dacOutput = iAccumulator + pTerm`, clamped and written via `setDac_()`.
 
-### Step 4 — DAC clamp / safety limits (Task 5 in todo-list)
-- Add `dacMinValue` / `dacMaxValue` to `ControlState` (defaults 0 / 65535).
-- Clamp every DAC write. Implement alongside Step 3.
+### Step 4 — DAC clamp / safety limits ✅ Done (implemented alongside Step 3)
+- `dacMinValue` / `dacMaxValue` added to `ControlState` (defaults 0 / 65535).
+- Every DAC write in `piLoop()` is clamped to these limits.
+
+### Step 5 — Validate and tune
+- Flash firmware and run with loop closed (mode transitions to RUN after warmup).
+- Watch `iAccumulator` in the log: it should drift slowly toward the correct DAC value.
+- Watch `ticCorrectedNetValue` sawtooth compress over time.
+- If the loop oscillates: increase `damping` or `timeConst`.
+- If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
 
 ---
 

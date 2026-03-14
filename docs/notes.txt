@@ -1,0 +1,5 @@
+What to watch in the log once in RUN mode
+iAccumulator should slowly drift away from mid-scale (32767) toward the correct DAC value
+The sawtooth amplitude in ticCorrectedNetValue should gradually decrease
+If it oscillates: increase damping or timeConst
+If it's too slow: decrease timeConst or increase gain

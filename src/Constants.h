@@ -71,6 +71,17 @@ struct ControlState {
     bool ticFilterSeeded = false;       // true after the EMA has been seeded with the first real measurement
     int32_t ticFilterConst = 16;
 
+    // --- PI loop state ---
+    double iAccumulator = DAC_MAX_VALUE / 2.0; // integrator state (DAC counts); initialised to mid-scale
+    double iRemainder = 0.0;                   // fractional carry-forward to avoid truncation drift
+    int32_t timeConst = 32;                    // loop time constant in seconds
+    double gain = 12.0;                        // DAC counts per linearised TIC count (EFC sensitivity)
+    double damping = 3.0;                      // P/I ratio — higher = more damped, slower pull-in
+
+    // --- DAC safety limits ---
+    uint16_t dacMinValue = 0;
+    uint16_t dacMaxValue = DAC_MAX_VALUE;
+
     double ticOffset = 500.0; // expected centre of TIC range (counts)
     // Polynomial coefficients for TIC linearization.
     // The polynomial is evaluated on a normalised input x = (tic - TIC_MIN) / (TIC_MAX - TIC_MIN) * 1000

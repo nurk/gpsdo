@@ -9,7 +9,6 @@ CalculationController::CalculationController(const SetDacFn setDac,
       readTemp_(readTemp),
       saveState_(saveState),
       setTCA0Count_(setTCA0Count) {
-    state_ = ControlState();
 }
 
 void CalculationController::calculate(const int32_t localTimerCounter,
@@ -28,6 +27,7 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     ticLinearization(localTicValue);
     ticPreFilter();
     computeFrequencyError();
+    piLoop(mode);
 
 #ifdef DEBUG_CALCULATION
     Serial2.print(F("Time: "));
@@ -48,6 +48,8 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(state_.ticCorrectedNetValueFiltered);
     Serial2.print(F(", TIC Frequency Error: "));
     Serial2.print(state_.ticFrequencyError);
+    Serial2.print(F(", I Accumulator: "));
+    Serial2.print(state_.iAccumulator, 2);
     Serial2.print(F(", DAC Voltage: "));
     Serial2.print(state_.dacVoltage, 4);
     Serial2.print(F(", DAC Value: "));
@@ -135,6 +137,61 @@ void CalculationController::computeFrequencyError() {
     if (state_.ticFilterSeeded) {
         state_.ticFrequencyError = state_.ticValueCorrection - state_.ticValueCorrectionOld;
     }
+}
+
+void CalculationController::piLoop(const OpMode mode) {
+    // Only run the control loop in RUN mode.
+    if (mode != RUN) {
+        return;
+    }
+
+    // --- P-term ---
+    // Proportional to the frequency error (rate of phase change, ns/s ≈ ppb).
+    // This provides fast damping: when the frequency is drifting, the P-term
+    // pushes the DAC immediately in the right direction.
+    const double pTerm = state_.ticFrequencyError * state_.gain;
+
+    // --- I-term (one step) ---
+    // Integrates the filtered phase error toward zero over time.
+    // Dividing by damping * timeConst makes the integrator slow and stable.
+    // The remainder from the previous tick is added back to avoid truncation drift.
+    const double iStep = (state_.ticCorrectedNetValueFiltered * state_.gain
+                          / static_cast<double>(state_.damping)
+                          / static_cast<double>(state_.timeConst))
+                         + state_.iRemainder;
+
+    const double iStepFloor = floor(iStep);
+    state_.iRemainder = iStep - iStepFloor;   // carry the fractional part forward
+    state_.iAccumulator += iStepFloor;
+
+    // --- Clamp accumulator to prevent integrator wind-up ---
+    // The accumulator represents the long-term DAC value, so it must stay
+    // within the DAC range.
+    if (state_.iAccumulator < static_cast<double>(state_.dacMinValue)) {
+        state_.iAccumulator = static_cast<double>(state_.dacMinValue);
+        state_.iRemainder = 0.0;
+    }
+    if (state_.iAccumulator > static_cast<double>(state_.dacMaxValue)) {
+        state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
+        state_.iRemainder = 0.0;
+    }
+
+    // --- Combine: integrator bias + proportional correction ---
+    const double dacOutput = state_.iAccumulator + pTerm;
+
+    // --- Clamp to DAC limits and write ---
+    const uint16_t dacClamped = static_cast<uint16_t>(
+        dacOutput < static_cast<double>(state_.dacMinValue) ? static_cast<double>(state_.dacMinValue) :
+        dacOutput > static_cast<double>(state_.dacMaxValue) ? static_cast<double>(state_.dacMaxValue) :
+        dacOutput);
+
+    state_.dacValue = dacClamped;
+    state_.dacVoltage = static_cast<float>(dacClamped) / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
+    setDac_(dacClamped);
+}
+
+void CalculationController::lockDetection(const OpMode mode) {
+
 }
 
 void CalculationController::updateSnapshots(const int32_t localTimerCounter) {

@@ -33,6 +33,8 @@ private:
     void ticLinearization(int32_t localTicValue);
     void ticPreFilter();
     void computeFrequencyError();
+    void piLoop(OpMode mode);
+    void lockDetection(OpMode mode);
     void updateSnapshots(int32_t localTimerCounter);
 };
 
