@@ -75,6 +75,7 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `LOCK_THRESHOLD` | 50.0 | Lock declared when `abs(filtered)` stays below this for 2×ticFilterConst s |
 | `UNLOCK_THRESHOLD` | 100.0 | Lock lost immediately when `abs(filtered)` exceeds this |
 | `PTERM_MAX_COUNTS` | 2000.0 | Maximum absolute DAC counts the P-term may contribute per tick |
+| `LOCK_INTEGRATOR_DRIFT_MAX` | 2.0 | Maximum `abs(iAccumulator - iAccumulatorLast)` counts/tick allowed while counting toward lock |
 
 ---
 
@@ -108,6 +109,7 @@ isFirstTic                  bool       — true until tick 1 has seeded all *Old
 ticFilterConst              int32_t    — EMA time constant in seconds (default 16)
 
 iAccumulator                double     — integrator state in DAC counts; initialised to mid-scale (32767)
+iAccumulatorLast            double     — iAccumulator value from previous tick; used by lockDetection to measure per-tick drift
 iRemainder                  double     — fractional carry-forward for I-step to avoid truncation drift
 timeConst                   int32_t    — loop time constant in seconds (default 32)
 gain                        double     — DAC counts per linearised TIC count / EFC sensitivity (default 12.0)
@@ -143,9 +145,11 @@ calculate()
   │                                iAccumulator clamped to [dacMinValue, dacMaxValue]
   │                                dacOutput = iAccumulator + pTerm, clamped, written via setDac_()
   ├── lockDetection(mode)        — only active when mode == RUN
-  │                                Counts consecutive seconds where abs(ticCorrectedNetValueFiltered) < LOCK_THRESHOLD (50)
+  │                                Counts consecutive seconds where BOTH conditions hold:
+  │                                  1. abs(ticCorrectedNetValueFiltered) < LOCK_THRESHOLD (50)
+  │                                  2. abs(iAccumulator - iAccumulatorLast) < LOCK_INTEGRATOR_DRIFT_MAX (2)
   │                                Declares lock after lockCount ≥ 2 × ticFilterConst
-  │                                Declares unlock immediately when abs > UNLOCK_THRESHOLD (100)
+  │                                Declares unlock immediately when abs(filtered) > UNLOCK_THRESHOLD (100)
   │                                Resets ppsLocked and lockCount when leaving RUN mode
   │                                Drives LOCK_LED via ppsLocked (written in main loop)
   └── updateSnapshots()          — copy current values to *Old fields
@@ -221,7 +225,32 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - iAccumulator was drifting slowly downward (~9 counts/tick) in RUN mode, confirming the I-term is working, but was overwhelmed by the P-term. ✅
 - lockCount briefly reached 1 on a few ticks but immediately reset — expected with an undisciplined OCXO and swinging DAC. ✅
 
+### log 2026-03-14-run2.log
+- Extended run (1728 seconds). Mode transitions WARMUP→RUN at T604. ✅
+- P-term clamp confirmed working: `ticFrequencyError` of ±500 × gain 12 = ±6000 is correctly clamped to ±2000. DAC alternates between `iAccumulator ± 2000` every tick — expected for free-running OCXO sawtooth. ✅
+- DAC swing is now ±2000 counts (≈0.15 V) instead of ±7000+ counts — a major improvement. ✅
+- `iAccumulator` drifting downward at ~10–11 counts/tick during pull-in, confirming I-term is working. At T680, accumulator reached 31899 — correctly heading toward the settled setpoint. ✅
+- `ticFrequencyError` values now in ±250–660 range during pull-in (no more ±800 spikes from the old raw computation). ✅
+- **LOCKED declared at T1179** (lockCount = 32 = 2 × ticFilterConst). ✅
+- `iAccumulator` stabilised at **~24250–24300** (≈1.85 V) — the true EFC setpoint for this OCXO at ambient temperature. ✅
+- After lock, `iAccumulator` continues to drift slowly downward (~5 counts/tick), reaching ~23550 by T1728. This slow residual drift indicates the OCXO is still not perfectly on-frequency at this DAC value — the I-term is still correcting. Expected; will converge further over a longer run. ✅
+- At lock, the TIC sawtooth still spans ~0–800 counts with a ~13-tick period. Each wrap produces a 1-tick P-term spike of ±2000 counts (DAC plunges to ~22100–22300 for one tick), but the `iAccumulator` itself is stable. This is correct P-term behaviour — not loop instability. ✅
+- `ticCorrectedNetValueFiltered` after lock oscillates between about ±50 counts and is centred near zero — confirming the loop is correctly nulling the phase error. ✅
+- `ticFrequencyError` on normal (non-wrap) ticks reduced to ±50–100 counts — down from ±600 at loop open. OCXO drift rate decreasing as the I-term homes in. ✅
+- lockCount holds at exactly 32 continuously from T1179 onward (never drops to 0 again after lock) — lock detection is stable. ✅
+- No missed PPS events across the full 1728-second run. ✅
+- **Remaining item to watch:** slow residual iAccumulator drift post-lock (~5 counts/tick). At this rate the integrator will reach a new stable point in another ~200–300 seconds. The TIC sawtooth will compress further once the OCXO is closer to on-frequency.
+
 ### ~~Step 3 — PI control loop~~ ✅ Done (awaiting re-validation after P-term fix)
+- Added to `ControlState`: `iAccumulator` (double, init mid-scale), `iRemainder` (double),
+  `timeConst` (int32_t, default 32), `gain` (double, default 12.0),
+  `damping` (double, default 3.0), `dacMinValue` / `dacMaxValue` (uint16_t, 0 / 65535).
+- Private method `piLoop(OpMode mode)` implemented in `CalculationController`.
+- Only executes when `mode == RUN`.
+- P-term = `ticFrequencyError * gain`; I-step = `ticCorrectedNetValueFiltered * gain / damping / timeConst`.
+- Fractional I-step carried forward in `iRemainder` to avoid truncation drift.
+- `iAccumulator` clamped to `[dacMinValue, dacMaxValue]` to prevent wind-up.
+- Final `dacOutput = iAccumulator + pTerm`, clamped and written via `setDac_()`.
 - Added to `ControlState`: `iAccumulator` (double, init mid-scale), `iRemainder` (double),
   `timeConst` (int32_t, default 32), `gain` (double, default 12.0),
   `damping` (double, default 3.0), `dacMinValue` / `dacMaxValue` (uint16_t, 0 / 65535).
@@ -246,12 +275,22 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - `LOCK_LED` is driven from `ppsLocked` in the main loop after each PPS event.
 
 ### Step 6 — Validate and tune
-- Flash firmware and run with loop closed (mode transitions to RUN after warmup).
-- Watch `iAccumulator` in the log: it should drift slowly toward the correct DAC value.
-- Watch `ticCorrectedNetValue` sawtooth compress over time.
-- Watch for "LOCKED" message in the debug log after convergence.
+- ✅ First lock achieved at T1179 in run2.log. Loop is working correctly.
+- `iAccumulator` still drifting slowly post-lock (~5 counts/tick) — the OCXO is not yet perfectly on-frequency at the current DAC setpoint. Run longer and observe.
 - If the loop oscillates: increase `damping` or `timeConst`.
 - If the loop is too slow to pull in: decrease `timeConst` or increase `gain`.
+- **Current status:** loop locks, integrator converging, sawtooth compressing. Continue running to observe full convergence.
+
+### Step 7 — Extended convergence run
+- Run for several thousand seconds (ideally until `iAccumulator` stabilises and TIC sawtooth compresses to ≪100 counts peak-to-peak).
+- Expected final DAC setpoint is somewhere below ~24000 counts based on current trajectory.
+- Watch for sawtooth period increasing (means OCXO is closer to on-frequency and drift rate is falling).
+- Watch `ticFrequencyError` on normal ticks approaching zero — that is the true indicator of frequency lock.
+- When `ticFrequencyError` on non-wrap ticks is consistently ±10 counts or less, the OCXO is essentially on-frequency.
+
+### Step 8 — EEPROM persistence (future)
+- Save `iAccumulator` and tuning constants to EEPROM on power-down / periodically.
+- On power-up, seed `iAccumulator` from saved value to avoid long re-convergence warm-up.
 
 ---
 

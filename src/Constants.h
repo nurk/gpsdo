@@ -73,10 +73,12 @@ struct ControlState {
 
     // --- PI loop state ---
     double iAccumulator = DAC_MAX_VALUE / 2.0; // integrator state (DAC counts); initialised to mid-scale
+    double iAccumulatorLast = DAC_MAX_VALUE / 2.0; // snapshot of iAccumulator from previous tick (for drift guard)
     double iRemainder = 0.0;                   // fractional carry-forward to avoid truncation drift
     int32_t timeConst = 32;                    // loop time constant in seconds
     double gain = 12.0;                        // DAC counts per linearised TIC count (EFC sensitivity)
     double damping = 3.0;                      // P/I ratio — higher = more damped, slower pull-in
+    double pTerm = 0.0;                        // proportional term (DAC counts)
 
     // --- DAC safety limits ---
     uint16_t dacMinValue = 0;
@@ -109,9 +111,15 @@ constexpr double TIC_MAX = 1012.0;
 constexpr double LOCK_THRESHOLD   = 50.0;   // filtered phase error must stay within ±50 counts to declare lock
 constexpr double UNLOCK_THRESHOLD = 100.0;  // filtered phase error must exceed ±100 counts to declare unlock
 
+// Maximum absolute iAccumulator change per tick (DAC counts) that is allowed while
+// counting toward lock.  While the integrator is still pulling in (e.g. 5+ counts/tick)
+// the loop has not converged and a lock declaration would be premature.
+// At the settled setpoint the I-step should be < 1 count/tick.
+constexpr double LOCK_INTEGRATOR_DRIFT_MAX = 2.0;
+
 // Maximum P-term contribution in DAC counts per tick.
 // The raw TIC sawtooth spans ~500 counts/s × gain 12 = ~6000 counts, which would
 // slam the DAC on every wrap. Clamping to ±2000 limits the kick while still
 // providing meaningful frequency-error damping.
-constexpr double PTERM_MAX_COUNTS = 2000.0;
+constexpr double PTERM_MAX_COUNTS = 2000.0;  //0.1526V
 #endif //GPSDO_V1_0_CONSTANTS_H

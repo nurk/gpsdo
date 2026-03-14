@@ -51,6 +51,8 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(state_.ticFrequencyError);
     Serial2.print(F(", I Accumulator: "));
     Serial2.print(state_.iAccumulator, 4);
+    Serial2.print(F(", P term: "));
+    Serial2.print(state_.pTerm, 4);
     Serial2.print(F(", PPS Lock count: "));
     Serial2.print(state_.ppsLockCount);
     Serial2.print(F(", DAC Voltage: "));
@@ -141,7 +143,8 @@ void CalculationController::computeFrequencyError() {
         // Rate of change of the phase error (counts/second ≈ ns/s ≈ ppb).
         // Uses the offset-subtracted value so the zero point is consistent with
         // ticCorrectedNetValue and ticCorrectedNetValueFiltered.
-        state_.ticFrequencyError = state_.ticCorrectedNetValue - (state_.ticValueCorrectionOld - state_.ticValueCorrectionOffset);
+        state_.ticFrequencyError = state_.ticCorrectedNetValue - (state_.ticValueCorrectionOld - state_.
+            ticValueCorrectionOffset);
     }
 }
 
@@ -159,8 +162,9 @@ void CalculationController::piLoop(const OpMode mode) {
     // gain=12 would be ±5000–7000 DAC counts — far too large. Clamp to
     // ±PTERM_MAX_COUNTS so the I-term remains in control of the long-term value.
     double pTerm = state_.ticFrequencyError * state_.gain;
-    if (pTerm >  PTERM_MAX_COUNTS) pTerm =  PTERM_MAX_COUNTS;
+    if (pTerm > PTERM_MAX_COUNTS) pTerm = PTERM_MAX_COUNTS;
     if (pTerm < -PTERM_MAX_COUNTS) pTerm = -PTERM_MAX_COUNTS;
+    state_.pTerm = pTerm;
 
     // --- I-term (one step) ---
     // Integrates the filtered phase error toward zero over time.
@@ -186,6 +190,9 @@ void CalculationController::piLoop(const OpMode mode) {
         state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
         state_.iRemainder = 0.0;
     }
+
+    // Record drift for lock detection before we forget the previous value.
+    state_.iAccumulatorLast = state_.iAccumulator - iStepFloor;
 
     // --- Combine: integrator bias + proportional correction ---
     const double dacOutput = state_.iAccumulator + pTerm;
@@ -225,8 +232,16 @@ void CalculationController::lockDetection(const OpMode mode) {
         }
     }
     else {
-        // Not yet locked — count consecutive seconds inside the lock threshold.
-        if (absFiltered < LOCK_THRESHOLD) {
+        // Not yet locked — both conditions must hold to count toward lock:
+        //   1. Filtered phase error within ±LOCK_THRESHOLD (loop is near zero phase error).
+        //   2. Integrator drift < LOCK_INTEGRATOR_DRIFT_MAX counts/tick (loop has converged —
+        //      the integrator is no longer pulling in).
+        // Either excursion resets the counter.
+        const double iDrift = abs(state_.iAccumulator - state_.iAccumulatorLast);
+        const bool phaseOk = absFiltered < LOCK_THRESHOLD;
+        const bool integratorOk = iDrift < LOCK_INTEGRATOR_DRIFT_MAX;
+
+        if (phaseOk && integratorOk) {
             state_.ppsLockCount++;
 
             // Require 2 × ticFilterConst consecutive seconds before declaring lock.
@@ -240,7 +255,7 @@ void CalculationController::lockDetection(const OpMode mode) {
             }
         }
         else {
-            // Any excursion outside the threshold resets the counter.
+            // Any excursion outside either threshold resets the counter.
             state_.ppsLockCount = 0;
         }
     }
