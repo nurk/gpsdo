@@ -59,6 +59,7 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `archive/OriginalCode.cpp` | Read-only legacy reference — do not edit |
 | `docs/` | Architecture, todo list, migration notes, EEPROM layout |
 | `docs/tic-capacitor-selection.md` | TIC capacitor (C9) analysis — X7R problems, ECHU1H102GX5 (PPS film) recommendation, C0G alternative |
+| `docs/tic-diode-selection.md` | TIC diode (D2) analysis — D2 is in series **before** C9, forward-biased during charging. 1N5817 junction capacitance (~150 pF) causes charge-ramp non-linearity. 1N4148W (4 pF C_J) recommended — reduces TIC_MAX due to higher V_F (~0.47 V vs ~0.22 V), requires updating TIC_MAX + ticOffset after swap. Reverse leakage is irrelevant in this topology. |
 | `logs/` | Serial capture logs from real hardware runs |
 
 ---
