@@ -31,6 +31,7 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     computeFrequencyError();
     piLoop(mode);
     lockDetection(mode);
+    storeState();
 
 #ifdef DEBUG_CALCULATION
     Serial2.print(F("Time: "));
@@ -152,25 +153,18 @@ void CalculationController::ticPreFilter() {
 }
 
 void CalculationController::computeFrequencyError() {
-    if (state_.ticFilterSeeded) {
-        // Rate of change of the fine (TIC) phase error component.
-        // Uses the offset-subtracted value so the zero point is consistent with
-        // ticCorrectedNetValue and ticCorrectedNetValueFiltered.
-        const double ticDelta = state_.ticCorrectedNetValue - (state_.ticValueCorrectionOld - state_.
-            ticValueCorrectionOffset);
+    // Rate of change of the fine (TIC) phase error component.
+    // Uses the offset-subtracted value so the zero point is consistent with
+    // ticCorrectedNetValue and ticCorrectedNetValueFiltered.
+    state_.ticDelta = state_.ticCorrectedNetValue - (state_.ticValueCorrectionOld - state_.ticValueCorrectionOffset);
 
-        state_.ticDelta = ticDelta;
-
-        // timerCounterError is the coarse frequency error: how many 5 MHz counter ticks
-        // (each = 200 ns) the OCXO gained or lost this second vs the GPS PPS.
-        // Converting to the same units as ticDelta (linearised TIC counts ≈ ns):
-        //   timerCounterError × 200 ns/count
-        // This term captures frequency offsets that cause complete TIC wrap-arounds and
-        // that ticDelta alone cannot see cleanly on every tick.
-        const double coarseFreqError = static_cast<double>(state_.timerCounterError) * 200.0;
-
-        state_.ticFrequencyError = ticDelta + coarseFreqError;
-    }
+    // timerCounterError is the coarse frequency error: how many 5 MHz counter ticks
+    // (each = 200 ns) the OCXO gained or lost this second vs the GPS PPS.
+    // Converting to the same units as ticDelta (linearised TIC counts ≈ ns):
+    //   timerCounterError × 200 ns/count
+    // This term captures frequency offsets that cause complete TIC wrap-arounds and
+    // that ticDelta alone cannot see cleanly on every tick.
+    state_.ticFrequencyError = state_.ticDelta + static_cast<double>(state_.timerCounterError) * 200.0;
 }
 
 void CalculationController::piLoop(const OpMode mode) {
@@ -339,4 +333,55 @@ void CalculationController::updateSnapshots(const int32_t localTimerCounter) {
     state_.timerCounterValueOld = localTimerCounter;
     state_.ticValueOld = state_.ticValue;
     state_.ticValueCorrectionOld = state_.ticValueCorrection;
+}
+
+void CalculationController::storeState() {
+    // Three-phase save cadence based purely on elapsed time — no resetting counters.
+    //
+    //   Phase 1 — t < 3600 s  (first hour):        save every 10 minutes (600 s)
+    //   Phase 2 — t < 43200 s (first 12 hours):    save every hour       (3600 s)
+    //   Phase 3 — t >= 43200 s (after 12 hours):   save every 12 hours   (43200 s)
+    //
+    // state_.time is seconds since boot and is always increasing, so each phase
+    // boundary is crossed exactly once and the modulo check gives the right cadence
+    // within each phase with no counter resets needed.
+
+    if (state_.time <= 0) return;
+
+    constexpr int32_t kTenMinutes   = 600;
+    constexpr int32_t kOneHour      = 3600;
+    constexpr int32_t kTwelveHours  = 43200;
+
+    if (state_.time < kOneHour) {
+        // Phase 1: save every 10 minutes.
+        if (state_.time % kTenMinutes == 0) {
+            saveState_(getEEPROMState());
+        }
+    } else if (state_.time < kTwelveHours) {
+        // Phase 2: save every hour.
+        if (state_.time % kOneHour == 0) {
+            saveState_(getEEPROMState());
+        }
+    } else {
+        // Phase 3: save every 12 hours.
+        if (state_.time % kTwelveHours == 0) {
+            saveState_(getEEPROMState());
+        }
+    }
+}
+
+EEPROMState CalculationController::getEEPROMState() const {
+    EEPROMState eepromState;
+    eepromState.dacValue    = state_.dacValue;
+    eepromState.iAccumulator = state_.iAccumulator;
+    return eepromState;
+}
+
+void CalculationController::setEEPROMState(const EEPROMState& eepromState) {
+    state_.dacValue      = eepromState.dacValue;
+    state_.dacVoltage    = static_cast<float>(eepromState.dacValue) /
+                           static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
+    state_.iAccumulator  = eepromState.iAccumulator;
+    state_.iRemainder    = 0.0; // always start fresh — remainder from previous session is meaningless
+    setDac_(eepromState.dacValue); // drive the hardware immediately
 }

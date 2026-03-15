@@ -12,7 +12,7 @@ float readTemperatureC();
 
 float readOCXOTemperatureC();
 
-void saveState();
+void saveState(const EEPROMState& eepromState);
 
 void manuallySaveState();
 

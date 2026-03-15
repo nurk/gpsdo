@@ -33,6 +33,7 @@
 #include <LcdController.h>
 #include <avr/wdt.h>
 #include <I2C_eeprom.h>
+#include <ExternalEEPROMController.h>
 
 #define ROTARY_PUSH PIN_PD3
 #define ROTARY_A PIN_PA0
@@ -84,6 +85,7 @@ LcdController lcdController(lcd,
                             calculationController,
                             readTemperatureC,
                             readOCXOTemperatureC);
+ExternalEEPROMController externalEepromController(eeprom);
 
 OpMode opMode = WARMUP;
 
@@ -97,9 +99,15 @@ volatile unsigned long lastOverflowCount = 0;
 
 bool ppsError = true;
 
+bool manualSaveRequested = false;
+unsigned long lastManualSaveMillis = 0;
 
-void saveState() {
-    // todo
+void saveState(const EEPROMState& eepromState) {
+    externalEepromController.saveState(eepromState);
+}
+
+void manuallySaveState() {
+    manualSaveRequested = true;
 }
 
 void doCalculation() {
@@ -359,11 +367,20 @@ void setup() {
 
     warmupEndMillis = millis() + warmupTime * 1000UL;
 
-    // Seed DAC and iAccumulator from DAC_INITIAL_VALUE (see Constants.h).
-    // Update DAC_INITIAL_VALUE after each settled run to reduce pull-in time.
-    calculationController.state().dacValue = DAC_INITIAL_VALUE;
-    calculationController.state().dacVoltage = static_cast<float>(DAC_INITIAL_VALUE) / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
-    setDacValue(DAC_INITIAL_VALUE);
+    externalEepromController.begin();
+    const EEPROMState eepromState = externalEepromController.loadState();
+    if (eepromState.isValid) {
+        calculationController.setEEPROMState(eepromState);
+        Serial2.print(F("EEPROM seeded: dacValue="));
+        Serial2.print(eepromState.dacValue);
+        Serial2.print(F(", iAccumulator="));
+        Serial2.println(eepromState.iAccumulator);
+    }
+    else {
+        // No valid EEPROM state — use compile-time default and drive the DAC now.
+        setDacValue(DAC_INITIAL_VALUE);
+        Serial2.println(F("EEPROM cold start: using DAC_INITIAL_VALUE"));
+    }
 }
 
 void processGps() {
@@ -450,6 +467,12 @@ void processCommands() {
             calculationController.state().dacValue = dacValue;
             calculationController.state().dacVoltage = dacVoltage;
         }
+        else if (read == 'i') {
+            externalEepromController.invalidate();
+        }
+        else if (read == 's') {
+            manuallySaveState();
+        }
 
         while (Serial2.available() > 0) {
             Serial2.read(); // flush rest of line
@@ -498,6 +521,12 @@ void loop() {
         }
         doCalculation();
         digitalWriteFast(LOCK_LED, calculationController.state().ppsLocked ? HIGH : LOW);
+        if (manualSaveRequested && millis() - lastManualSaveMillis > 5000) {
+            saveState(calculationController.getEEPROMState());
+            Serial2.println(F("Controller state manually saved to EEPROM"));
+            lastManualSaveMillis = millis();
+            manualSaveRequested = false;
+        }
     }
 
     wdt_reset();

@@ -51,8 +51,9 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | File | Purpose |
 |---|---|
 | `src/main.cpp` | Hardware init, ISRs, main loop, module wiring |
-| `src/Constants.h` | All enums, constexpr constants, typedefs, `ControlState`, `GpsData` |
-| `src/CalculationController.h/.cpp` | Measurement pipeline and (future) PI control loop |
+| `src/Constants.h` | All enums, constexpr constants, typedefs, `ControlState`, `GpsData`, `EEPROMState` |
+| `src/CalculationController.h/.cpp` | Measurement pipeline and PI control loop |
+| `src/ExternalEEPROMController.h/.cpp` | 24LC128 wear-levelled EEPROM persistence (8 rotating banks) |
 | `src/LcdController.h/.cpp` | 20×4 HD44780 display, page rendering |
 | `src/Callbacks.h` | Forward declarations for callback functions wired in main |
 | `archive/OriginalCode.cpp` | Read-only legacy reference — do not edit |
@@ -74,6 +75,7 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `TIC_MIN` | 12.0 | Minimum valid raw TIC ADC count |
 | `TIC_MAX` | 1012.0 | Maximum valid raw TIC ADC count |
 | `WARMUP_TIME_DEFAULT` | 600 s | Default OCXO warm-up time |
+| `DAC_INITIAL_VALUE` | 22880 | Best-guess EFC starting point on cold boot (midpoint of run9/run10 settled values) |
 | `LOCK_THRESHOLD` | 50.0 | Lock declared when `abs(filtered)` stays below this for 2×ticFilterConst s |
 | `UNLOCK_THRESHOLD` | 100.0 | Lock lost immediately when `abs(filtered)` exceeds this (single tick) |
 | `PTERM_MAX_COUNTS` | 2000.0 | Maximum absolute DAC counts the P-term may contribute per tick |
@@ -85,7 +87,7 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 ```
 isFirstTic                  bool       — true until tick 1 has seeded all *Old snapshots; skips all calculations on tick 1
 
-dacValue                    uint16_t   — current DAC output value
+dacValue                    uint16_t   — current DAC output value; initialised from DAC_INITIAL_VALUE
 dacVoltage                  float      — derived from dacValue / DAC_MAX_VALUE * DAC_VREF
 holdValue                   int32_t    — DAC value to use in HOLD mode
 
@@ -113,8 +115,8 @@ ticDelta                    double     — rate of change of offset-subtracted p
 ticFilterSeeded             bool       — false until first real value seeds the EMA
 ticFilterConst              int32_t    — EMA time constant in seconds (default 16)
 
-iAccumulator                double     — integrator state in DAC counts; initialised to mid-scale (32767.5)
-iRemainder                  double     — fractional carry-forward for I-step to avoid truncation drift
+iAccumulator                double     — integrator state in DAC counts; seeded from DAC_INITIAL_VALUE (or EEPROM on warm boot)
+iRemainder                  double     — fractional carry-forward for I-step to avoid truncation drift; always 0.0 on boot
 timeConst                   int32_t    — loop time constant in seconds (default 32)
 gain                        double     — DAC counts per linearised TIC count / EFC sensitivity (default 12.0)
 damping                     double     — P/I ratio; higher = more damped, slower pull-in (default 3.0)
@@ -138,6 +140,52 @@ x3Coefficient               double     — cubic linearisation coeff (stored pre
 
 ---
 
+## `EEPROMState` — persisted fields (in `src/Constants.h`)
+
+```
+dacValue                    uint16_t   — last settled DAC output value
+iAccumulator                double     — integrator state (DAC counts)
+
+isValid                     bool       — IN-MEMORY ONLY sentinel; never written to or read from EEPROM.
+                                         Set true by ExternalEEPROMController::loadState() after a
+                                         successful read. Always false on a cold start (no valid bank).
+```
+
+**Rules:**
+- `iRemainder` is **never** stored — it is a fractional carry-forward meaningful only within a
+  continuous run. It is always initialised to 0.0 on boot.
+- `dacVoltage` is **never** stored — it is always derived from `dacValue` on load.
+- `isValid` is **never** written to EEPROM — it is set only after a successful read.
+- Bump the `kMagic` version byte in `ExternalEEPROMController.h` (`0x47505301` → `0x47505302`
+  etc.) whenever `EEPROMState`'s stored layout changes. This causes stale banks to be rejected
+  on the next boot.
+
+---
+
+## `ExternalEEPROMController` — EEPROM wear-levelling (in `src/ExternalEEPROMController.h/.cpp`)
+
+- **Hardware:** 24LC128 (128 Kbit = 16 KB) at I²C address 0x50.
+- **Bank layout:** 8 banks × 2048 bytes. Each bank holds an 8-byte header
+  (4-byte magic + 4-byte sequence number) followed by the payload
+  (`dacValue` + `iAccumulator` = 10 bytes). Banks rotate on every save
+  (round-robin) to spread wear evenly.
+- **Magic:** `0x47505301` ("GPS" + version byte `0x01`). Bump the version byte
+  whenever `EEPROMState` stored layout changes.
+- **Write order:** payload written before header. If power is lost mid-write the
+  old header is still intact, so the previous bank remains valid on next boot.
+- **`begin()`:** scans all banks, finds the highest valid sequence number (`>`
+  comparison — deterministic on tie). Sets `isValid_` and `activeBank_`.
+- **`loadState()`:** reads the active bank, deserialises fields explicitly
+  (no blind `memcpy`), sets `isValid = true` in the returned struct.
+- **`saveState()`:** serialises fields explicitly, writes payload then header to
+  the next bank, updates `activeBank_` and `activeSeq_`.
+- **`invalidate()`:** wipes magic + seq on all banks (used via serial 'i' command).
+- **Serial commands (in `processCommands()`):**
+  - `'s'` — manually trigger a save.
+  - `'i'` — invalidate all banks (forces cold-start next boot).
+
+---
+
 ## `CalculationController` — pipeline (called once per PPS)
 
 ```
@@ -146,10 +194,11 @@ calculate()
   ├── timerCounterNormalization() — compute timerCounterValueReal + timerCounterError
   ├── ticLinearization()         — cubic polynomial, produce ticCorrectedNetValue
   ├── ticPreFilter()             — EMA on ticCorrectedNetValue → ticCorrectedNetValueFiltered
-  │                                Seeds on first tick; skips EMA until ticFilterSeeded == true
+  │                                Seeds on first tick; sets ticFilterSeeded = true
   ├── computeFrequencyError()    — ticDelta = ticCorrectedNetValue - (ticValueCorrectionOld - ticValueCorrectionOffset)
   │                                ticFrequencyError = ticDelta + timerCounterError × 200 (ns per 5 MHz counter tick)
-  │                                Both stored in ControlState. Guarded by ticFilterSeeded (skipped on tick 2).
+  │                                Both stored in ControlState.
+  │                                No ticFilterSeeded guard needed — ticPreFilter() always sets it first.
   ├── piLoop(mode)               — PI control; only active when mode == RUN
   │                                P-term = ticDelta * gain (NOT ticFrequencyError — coarse term caused GPS jitter noise)
   │                                  Clamped to ±PTERM_MAX_COUNTS. Stored in state_.pTerm.
@@ -173,10 +222,26 @@ calculate()
   │                                Resets ppsLocked and ppsLockCount when leaving RUN mode
   │                                Drives LOCK_LED via ppsLocked (written in main loop)
   │                                No iDrift guard — phase condition alone is sufficient (see run7/run8 notes)
+  ├── storeState()               — periodic EEPROM save via saveState_ callback
+  │                                Phase 1 (t < 3600 s):   save every 10 minutes
+  │                                Phase 2 (t < 43200 s):  save every hour
+  │                                Phase 3 (t ≥ 43200 s):  save every 12 hours
+  │                                Uses state_.time directly (no resetting counters) — phases crossed exactly once.
   └── updateSnapshots()          — copy current values to *Old fields
 ```
 
 The `mode` parameter (`RUN` / `HOLD` / `WARMUP`) gates both `piLoop()` and `lockDetection()` — both are no-ops unless `mode == RUN`.
+
+### Boot-time EEPROM seeding (in `setup()`)
+```
+externalEepromController.begin()   — scan all banks, find highest valid seq
+loadState()                        — returns EEPROMState with isValid = true/false
+if isValid:
+    setEEPROMState()               — restores dacValue + iAccumulator; derives dacVoltage;
+                                     zeroes iRemainder; calls setDac_() immediately
+else:
+    setDacValue(DAC_INITIAL_VALUE) — cold start: use compile-time default
+```
 
 ---
 
@@ -263,15 +328,6 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - **Remaining item to watch:** slow residual iAccumulator drift post-lock (~5 counts/tick). At this rate the integrator will reach a new stable point in another ~200–300 seconds. The TIC sawtooth will compress further once the OCXO is closer to on-frequency.
 
 ### ~~Step 3 — PI control loop~~ ✅ Done (validated in run2/run5/run6/run8/run9)
-- Added to `ControlState`: `iAccumulator` (double, init mid-scale), `iRemainder` (double),
-  `timeConst` (int32_t, default 32), `gain` (double, default 12.0),
-  `damping` (double, default 3.0), `dacMinValue` / `dacMaxValue` (uint16_t, 0 / 65535).
-- Private method `piLoop(OpMode mode)` implemented in `CalculationController`.
-- Only executes when `mode == RUN`.
-- P-term = `ticFrequencyError * gain`; I-step = `ticCorrectedNetValueFiltered * gain / damping / timeConst`.
-- Fractional I-step carried forward in `iRemainder` to avoid truncation drift.
-- `iAccumulator` clamped to `[dacMinValue, dacMaxValue]` to prevent wind-up.
-- Final `dacOutput = iAccumulator + pTerm`, clamped and written via `setDac_()`.
 - Added to `ControlState`: `iAccumulator` (double, init mid-scale), `iRemainder` (double),
   `timeConst` (int32_t, default 32), `gain` (double, default 12.0),
   `damping` (double, default 3.0), `dacMinValue` / `dacMaxValue` (uint16_t, 0 / 65535).
@@ -458,6 +514,8 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
   The `DEBUG_CALCULATION` flag is enabled in `platformio.ini`.
 - After every edit run the linter mentally: no narrowing conversions,
   no integer division in float context, no uninitialised state reads.
+- **`EEPROMState` layout changes** require bumping the `kMagic` version byte in
+  `ExternalEEPROMController.h` to invalidate stale banks on next boot.
 
 ---
 
@@ -465,9 +523,7 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 
 After every session, update:
 - **`ControlState` fields** if new fields were added or changed.
+- **`EEPROMState` fields** if stored fields were added or changed (and bump `kMagic`).
 - **Pipeline section** if new methods were added to `CalculationController`.
 - **Validated section** if a new log confirmed correct behaviour.
 - **Next steps** if a step was completed or a new one was identified.
-
-
-
