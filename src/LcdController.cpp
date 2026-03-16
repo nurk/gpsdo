@@ -24,6 +24,12 @@ void LcdController::update(const int page) {
             case 1:
                 drawPageOne();
                 break;
+            case 2:
+                drawPageTwo();
+                break;
+            case 3:
+                drawPageThree();
+                break;
             default:
                 drawPageZero();
                 break;
@@ -132,11 +138,85 @@ void LcdController::drawPageOne() const {
     lcd_.clear();
     char line[21];
 
+    // Row 0: "Dac Volts: " (11) + value (8) + "V" (1) = 20
     lcd_.setCursor(0, 0);
-    snprintf(line, sizeof(line), "Dac Volts: %6.4fV",
-             calculationController_.state().dacVoltage);
+    snprintf(line, sizeof(line), "Dac Volts: %8.4fV", calculationController_.state().dacVoltage);
     lcd_.print(line);
 
+    // Row 1: "Dac Value: " (11) + value right-aligned in 9 = 20
     lcd_.setCursor(0, 1);
-    lcd_.print(opMode_);
+    snprintf(line, sizeof(line), "Dac Value: %9u", calculationController_.state().dacValue);
+    lcd_.print(line);
+
+    // Row 2: "Mode: " (6) + mode string right-aligned in 14 = 20
+    lcd_.setCursor(0, 2);
+    const char* modeStr;
+    switch (opMode_) {
+        case WARMUP: modeStr = "Heating";
+            break;
+        case RUN: modeStr = "Run";
+            break;
+        case HOLD: modeStr = "Hold";
+            break;
+        default: modeStr = "Unknown";
+            break;
+    }
+    snprintf(line, sizeof(line), "Mode: %14s", modeStr);
+    lcd_.print(line);
+
+    // Row 3: "PPS:" (4) + lock state right-aligned in 16 = 20
+    lcd_.setCursor(0, 3);
+    const char* lockStr = calculationController_.state().ppsLocked ? "Locked" : "Unlocked";
+    snprintf(line, sizeof(line), "PPS:%16s", lockStr);
+    lcd_.print(line);
+}
+
+void LcdController::drawPageTwo() const {
+    lcd_.clear();
+    char line[21];
+
+    // Row 0: "TIC Raw:" (8) + value right-aligned in 12 = 20
+    lcd_.setCursor(0, 0);
+    snprintf(line, sizeof(line), "TIC Raw:%12d", calculationController_.state().ticValue);
+    lcd_.print(line);
+
+    // Row 1: "TIC filt:" (9) + value right-aligned in 11 = 20
+    lcd_.setCursor(0, 1);
+    snprintf(line, sizeof(line), "TIC filt:%11.3f", calculationController_.state().ticCorrectedNetValueFiltered);
+    lcd_.print(line);
+
+    // Row 2: "TIC err:" (8) + value right-aligned in 12 = 20
+    lcd_.setCursor(0, 2);
+    snprintf(line, sizeof(line), "TIC err:%12.3f", calculationController_.state().ticFrequencyError);
+    lcd_.print(line);
+
+    // Row 3: "Ctr err:" (8) + value right-aligned in 12 = 20
+    lcd_.setCursor(0, 3);
+    snprintf(line, sizeof(line), "Ctr err:%12d", calculationController_.state().timerCounterError);
+    lcd_.print(line);
+}
+
+void LcdController::drawPageThree() const {
+    lcd_.clear();
+    char line[21];
+
+    // Row 0: "I Acc:" (6) + value right-aligned in 14 = 20
+    lcd_.setCursor(0, 0);
+    snprintf(line, sizeof(line), "I Acc:%14.3f", calculationController_.state().iAccumulator);
+    lcd_.print(line);
+
+    // Row 1: "I Rem:" (6) + value right-aligned in 14 = 20
+    lcd_.setCursor(0, 1);
+    snprintf(line, sizeof(line), "I Rem:%14.3f", calculationController_.state().iRemainder);
+    lcd_.print(line);
+
+    // Row 2: "P Term:" (7) + value right-aligned in 13 = 20
+    lcd_.setCursor(0, 2);
+    snprintf(line, sizeof(line), "P Term:%13.3f", calculationController_.state().pTerm);
+    lcd_.print(line);
+
+    // Row 3: "Crs Acc:" (8) + value right-aligned in 12 = 20
+    lcd_.setCursor(0, 3);
+    snprintf(line, sizeof(line), "Crs Acc:%12.3f", calculationController_.state().coarseErrorAccumulator);
+    lcd_.print(line);
 }
