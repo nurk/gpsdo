@@ -530,6 +530,26 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - Serial `'s'` command triggers a manual save; `'i'` invalidates all banks (forces cold boot next restart).
 - `iRemainder` and `dacVoltage` are never stored — always re-derived on load.
 
+### log 2026-03-20-run1-bis.log
+- **Run T93–T3563 (3470 seconds total).** Mode transition WARMUP→RUN at T604. ✅
+- **Warm boot confirmed:** `iAccumulator` seeded at 22880 (from EEPROM). ✅
+- Loop converged nicely from T604 → T640: `iAccumulator` pulled from 22880 → ~22730 in the first 36 ticks of RUN mode. ✅
+- **LOCKED declared** at approximately T1447 (first occurrence of `ppsLockCount = 32`). ✅
+- `iAccumulator` stable at ~23,150–23,200 through T2960. OCXO temp rising slowly from 28.37 → 29.87 °C. ✅
+- **LOOP COLLAPSED at T3008.** `iAccumulator` dropped instantly from ~23,184 to **0**. DAC crashed to 0. OCXO ran ~700–800 ppb fast. Loop never recovered. ⚠️
+- **Root cause — coarseErrorAccumulator poisoned by glitch `timerCounterError` spikes:**
+  - T2964: `timerCounterError = -29,949,999` (hardware glitch — spurious overflow-counter increment)
+  - T2967: `timerCounterError = -9,350,000` (second glitch)
+  - Both were accumulated unconditionally into `coarseErrorAccumulator`, driving it to **−115,549,952**
+  - T3008 (`time % 64 == 0`): coarse trim fired: `coarseTrim = -115,549,952 × 0.5 = -57,799,976`
+  - Applied to `iAccumulator` (~23,184): result clamps to 0. DAC = 0. Loop dead.
+- **Fix applied:** `coarseErrorAccumulator` now guarded by `COARSE_ERROR_SANITY_LIMIT = 50`.
+  - Any tick where `|timerCounterError| > 50` is silently skipped — not accumulated.
+  - Normal operation range is ±1–5; 50 counts (= 10 µs/s = 10 ppm) is unambiguously a glitch.
+  - The anti-windup rail check was working correctly but had no defence against a single poison value accumulated 64 s in advance.
+- **New constant added to `Constants.h`:** `COARSE_ERROR_SANITY_LIMIT = 50` (int32_t).
+- No missed PPS events prior to the crash. ✅
+
 ---
 
 ## Coding conventions

@@ -158,6 +158,15 @@ constexpr double UNLOCK_THRESHOLD = 100.0; // filtered phase error must exceed �
 //  by ±200×timerCounterError, making 2000 fire constantly. With ticDelta that problem is gone.)
 constexpr double PTERM_MAX_COUNTS = 2000.0;
 
+// Maximum plausible timerCounterError magnitude for coarse accumulator input.
+// Normal operation: ±1–5 counts (±200–1000 ns/s).
+// Values beyond this are hardware glitches (e.g. spurious overflow-counter
+// increments from a noisy PPS edge) and must not be accumulated — one poisoned
+// tick multiplied by coarseTrimGain and applied 64 s later would crash the DAC.
+// 50 counts = 10 µs/s = 10 ppm — impossibly large for a disciplined OCXO;
+// anything beyond this is unambiguously a glitch.
+constexpr int32_t COARSE_ERROR_SANITY_LIMIT = 50;
+
 
 using SetWarmupTimeFn     = void(*)(uint16_t seconds);
 using SetDacFn            = void(*)(uint16_t value);

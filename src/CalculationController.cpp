@@ -241,7 +241,13 @@ void CalculationController::piLoop(const OpMode mode) {
     // correction that must not fight the fine I-term.
     //
     // Anti-windup: same rail checks as the fine I-term apply.
-    state_.coarseErrorAccumulator += static_cast<double>(state_.timerCounterError);
+    // Guard: only accumulate timerCounterError values within a plausible range.
+    // A glitch tick (e.g. spurious overflow interrupt) can produce |error| >> 5;
+    // accumulated over the period and multiplied by coarseTrimGain it would drive
+    // iAccumulator to a rail 64 s later.  Discard anything beyond the sanity limit.
+    if (abs(state_.timerCounterError) <= COARSE_ERROR_SANITY_LIMIT) {
+        state_.coarseErrorAccumulator += static_cast<double>(state_.timerCounterError);
+    }
     state_.lastCoarseTrim         = 0.0;
 
     if (state_.time % state_.coarseTrimPeriod == 0) {

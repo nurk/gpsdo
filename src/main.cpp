@@ -467,6 +467,7 @@ void processCommands() {
             calculationController.state().dacVoltage = dacVoltage;
         } else if (read == 'i') {
             externalEepromController.invalidate();
+            Serial2.println(F("EEPROM state invalidated — next boot will be a cold start with default values"));
         } else if (read == 's') {
             manuallySaveState();
         }
