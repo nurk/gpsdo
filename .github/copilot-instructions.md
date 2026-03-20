@@ -129,6 +129,9 @@ coarseErrorAccumulator      double     — running sum of timerCounterError; res
 coarseTrimGain              double     — DAC counts applied per accumulated timerCounterError count (default 0.5)
 coarseTrimPeriod            int32_t    — seconds between coarse trim steps (default 64; must be > timeConst)
 lastCoarseTrim              double     — most recent coarse trim value applied (0 on non-trim ticks; logged each PPS)
+iTermSuppressCount          int32_t    — countdown: I-term is suppressed (step skipped, iRemainder zeroed) while > 0;
+                                         set to coarseTrimPeriod when a coarse trim fires away from a rail, giving
+                                         the trim a full period to work before the I-term can drain it back
 
 dacMinValue                 uint16_t   — lower DAC safety limit (default 0)
 dacMaxValue                 uint16_t   — upper DAC safety limit (default 65535)
@@ -224,10 +227,13 @@ calculate()
   │                                  already at a rail and step would push further into it.
   │                                iAccumulator clamped to [dacMinValue, dacMaxValue].
   │                                Coarse trim (outer loop on timerCounterError):
-  │                                  coarseErrorAccumulator += timerCounterError each tick.
+  │                                  coarseErrorAccumulator += timerCounterError each tick (guarded by COARSE_ERROR_SANITY_LIMIT).
   │                                  Every coarseTrimPeriod seconds: iAccumulator += coarseErrorAccumulator * coarseTrimGain,
   │                                  coarseErrorAccumulator reset to 0, lastCoarseTrim recorded.
-  │                                  Anti-windup: trim discarded if already at a rail.
+  │                                  Anti-windup: trim discarded if already at a rail and trim would push further in.
+  │                                  Rail-recovery suppression: if trim fires away from a rail (trimAway), iTermSuppressCount
+  │                                    is set to coarseTrimPeriod and iRemainder is zeroed — I-term is suspended for that
+  │                                    many ticks so the coarse trim has a full period to work before the I-term can drain it.
   │                                  Corrects residual frequency offsets the fine TIC loop cannot null.
   │                                dacOutput = iAccumulator + pTerm, clamped, written via setDac_()
   ├── lockDetection(mode)        — only active when mode == RUN
@@ -549,6 +555,23 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
   - The anti-windup rail check was working correctly but had no defence against a single poison value accumulated 64 s in advance.
 - **New constant added to `Constants.h`:** `COARSE_ERROR_SANITY_LIMIT = 50` (int32_t).
 - No missed PPS events prior to the crash. ✅
+
+### log 2026-03-20-run2.log
+- **Run T604–T2244+ (mode RUN from T604).** Loop locked correctly, `iAccumulator` stable at ~22,800 counts. ✅
+- **LOOP COLLAPSED at T2048.** Same symptom as run1-bis: `iAccumulator` → 0, DAC → 0. ⚠️
+- **Root cause — two separate bugs in the previous fix:**
+  1. **`abs()` is unsafe for `int32_t` on AVR.** Arduino's `abs()` macro operates on `int`, which is 16-bit on AVR. Calling `abs(state_.timerCounterError)` on a value like `−29,949,998` silently truncates to 16-bit before taking abs, yielding a small garbage value (e.g. ≈ 2) that passes the `<= 50` guard — so the sanity check was silently no-oping for the exact glitch values it was designed to catch.
+  2. **`timerCounterError` itself was computed with `unsigned long` overflow.** `lastOverflow * MODULO` is evaluated in `unsigned long` arithmetic. If `lastOverflow` is e.g. 599 (a spurious large value from a missed PPS ISR accumulating multiple seconds of overflow counts), the product is 29,950,000 — within `unsigned long` range but wraps to a negative `int32_t` when cast. The `static_cast<int32_t>` was masking the problem by converting the large unsigned product to a valid-looking negative int32.
+- **Fixes applied (two changes to `CalculationController.cpp`):**
+  - **`timerCounterNormalization()`**: `lastOverflow` is now clamped to ≤ 200 before use (100 overflows/s is normal; 200 is the absolute maximum for a sane PPS interval). This prevents the `lastOverflow * MODULO` product from ever overflowing `int32_t`, keeping `timerCounterError` in a physically meaningful range.
+  - **Coarse accumulator guard**: replaced `abs(state_.timerCounterError) <= COARSE_ERROR_SANITY_LIMIT` with the explicit safe form `state_.timerCounterError >= -COARSE_ERROR_SANITY_LIMIT && state_.timerCounterError <= COARSE_ERROR_SANITY_LIMIT` — no integer type ambiguity possible.
+  - **`lockDetection()`**: `abs(ticCorrectedNetValueFiltered)` replaced with `fabs()` (the correct function for `double`).
+
+- **Non-recovery bug also identified and fixed:** Even with the crash prevented, if a glitch somehow drives `iAccumulator` to a rail, the loop could not self-recover. The coarse trim injects ~238 counts per period but the I-term drains it in ~19 ticks at typical post-crash filtered error levels — the trim can never win. Fixed by adding **I-term suppression after a rail-recovery coarse trim**:
+  - New field `iTermSuppressCount` (int32_t, default 0) added to `ControlState`.
+  - When the coarse trim fires and moves the accumulator **away from** a rail (`trimAway` = true), `iTermSuppressCount` is set to `coarseTrimPeriod` and `iRemainder` is zeroed.
+  - Each tick while `iTermSuppressCount > 0`, the I-step is skipped entirely and the count decrements.
+  - This gives the coarse trim one full period to push the accumulator clear before the I-term resumes.
 
 ---
 

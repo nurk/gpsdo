@@ -101,6 +101,10 @@ struct ControlState {
     double coarseTrimGain         = 0.5; // DAC counts per accumulated coarse count per period
     int32_t coarseTrimPeriod      = 64; // seconds between coarse trim steps (must be > timeConst)
     double lastCoarseTrim         = 0.0; // most recent coarse trim applied (logged each PPS; 0 on non-trim ticks)
+    // When a coarse trim fires to pull the accumulator away from a rail, the I-term
+    // is suppressed for coarseTrimPeriod ticks so the trim has a full period to work
+    // uncontested before the I-term can drain it back.  Counts down each tick.
+    int32_t iTermSuppressCount    = 0;
 
     // --- PPS Locked ---
     bool ppsLocked       = false;

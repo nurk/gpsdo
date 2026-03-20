@@ -101,7 +101,15 @@ void CalculationController::timerCounterNormalization(const int32_t localTimerCo
     }
     state_.timerCounterValueReal = timerCounterValueReal;
     state_.timerCounterValueOld  = localTimerCounter;
-    state_.timerCounterError     = static_cast<int32_t>(COUNTS_PER_PPS - timerCounterValueReal - lastOverflow * MODULO);
+
+    // Compute timerCounterError using int32_t arithmetic to avoid unsigned long
+    // overflow wrapping. lastOverflow * MODULO can exceed int32_t if lastOverflow
+    // is a spurious large value (e.g. missed PPS ISR accumulating multiple seconds
+    // of overflows). Clamp lastOverflow to the maximum plausible value first:
+    // COUNTS_PER_PPS / MODULO = 100 overflows per second; allow up to 2× for safety.
+    const auto clampedOverflow = static_cast<int32_t>(
+        lastOverflow > 200UL ? 200UL : lastOverflow);
+    state_.timerCounterError = COUNTS_PER_PPS - timerCounterValueReal - clampedOverflow * MODULO;
 }
 
 void CalculationController::ticLinearization(const int32_t localTicValue) {
@@ -190,40 +198,45 @@ void CalculationController::piLoop(const OpMode mode) {
     // Integrates the filtered phase error toward zero over time.
     // Dividing by damping * timeConst makes the integrator slow and stable.
     // The remainder from the previous tick is added back to avoid truncation drift.
-    const double iStep = (state_.ticCorrectedNetValueFiltered * state_.gain
-            / static_cast<double>(state_.damping)
-            / static_cast<double>(state_.timeConst))
-        + state_.iRemainder;
-
-    const double iStepFloor = floor(iStep);
-
-
-    // --- Anti-windup: do not apply an I-step that pushes deeper into a rail ---
-    // If the accumulator is already at the minimum clamp and the step would make
-    // it more negative, discard the step (and its remainder) entirely.
-    // Likewise for the maximum clamp. This prevents the integrator from winding
-    // up indefinitely when the required EFC voltage is outside the DAC range.
-    // (Electronic Frequency Control)
-    const bool atMin             = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
-    const bool atMax             = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
-    const bool stepDrivesIntoMin = iStepFloor < 0.0;
-    const bool stepDrivesIntoMax = iStepFloor > 0.0;
-
-    if ((atMin && stepDrivesIntoMin) || (atMax && stepDrivesIntoMax)) {
-        // Step would push further into the rail — discard it.
+    //
+    // I-term suppression: when the coarse trim has just fired a rail-recovery trim,
+    // suppress the I-term for coarseTrimPeriod ticks so the coarse trim has a full
+    // period to work uncontested before the I-term can drain the recovery back to the rail.
+    if (state_.iTermSuppressCount > 0) {
+        state_.iTermSuppressCount--;
+        // Keep iRemainder zeroed during suppression so there is no accumulated
+        // carry that would produce a large burst when suppression ends.
         state_.iRemainder = 0.0;
     } else {
-        state_.iRemainder   = iStep - iStepFloor; // carry the fractional part forward
-        state_.iAccumulator += iStepFloor;
+        const double iStep = (state_.ticCorrectedNetValueFiltered * state_.gain
+                / static_cast<double>(state_.damping)
+                / static_cast<double>(state_.timeConst))
+            + state_.iRemainder;
 
-        // --- Clamp accumulator to DAC range ---
-        if (state_.iAccumulator < static_cast<double>(state_.dacMinValue)) {
-            state_.iAccumulator = static_cast<double>(state_.dacMinValue);
-            state_.iRemainder   = 0.0;
-        }
-        if (state_.iAccumulator > static_cast<double>(state_.dacMaxValue)) {
-            state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
-            state_.iRemainder   = 0.0;
+        const double iStepFloor = floor(iStep);
+
+        // --- Anti-windup: do not apply an I-step that pushes deeper into a rail ---
+        const bool atMin             = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
+        const bool atMax             = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
+        const bool stepDrivesIntoMin = iStepFloor < 0.0;
+        const bool stepDrivesIntoMax = iStepFloor > 0.0;
+
+        if ((atMin && stepDrivesIntoMin) || (atMax && stepDrivesIntoMax)) {
+            // Step would push further into the rail — discard it.
+            state_.iRemainder = 0.0;
+        } else {
+            state_.iRemainder   = iStep - iStepFloor;
+            state_.iAccumulator += iStepFloor;
+
+            // --- Clamp accumulator to DAC range ---
+            if (state_.iAccumulator < static_cast<double>(state_.dacMinValue)) {
+                state_.iAccumulator = static_cast<double>(state_.dacMinValue);
+                state_.iRemainder   = 0.0;
+            }
+            if (state_.iAccumulator > static_cast<double>(state_.dacMaxValue)) {
+                state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
+                state_.iRemainder   = 0.0;
+            }
         }
     }
 
@@ -245,7 +258,10 @@ void CalculationController::piLoop(const OpMode mode) {
     // A glitch tick (e.g. spurious overflow interrupt) can produce |error| >> 5;
     // accumulated over the period and multiplied by coarseTrimGain it would drive
     // iAccumulator to a rail 64 s later.  Discard anything beyond the sanity limit.
-    if (abs(state_.timerCounterError) <= COARSE_ERROR_SANITY_LIMIT) {
+    // NOTE: use explicit comparison rather than abs() — the Arduino abs() macro
+    // operates on int (16-bit on AVR) and is unsafe for int32_t values.
+    if (state_.timerCounterError >= -COARSE_ERROR_SANITY_LIMIT &&
+        state_.timerCounterError <=  COARSE_ERROR_SANITY_LIMIT) {
         state_.coarseErrorAccumulator += static_cast<double>(state_.timerCounterError);
     }
     state_.lastCoarseTrim         = 0.0;
@@ -258,6 +274,7 @@ void CalculationController::piLoop(const OpMode mode) {
         const bool coarseAtMax     = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
         const bool coarseDrivesMin = coarseTrim < 0.0;
         const bool coarseDrivesMax = coarseTrim > 0.0;
+        const bool trimAway = (coarseAtMin && coarseDrivesMax) || (coarseAtMax && coarseDrivesMin);
 
         if (!((coarseAtMin && coarseDrivesMin) || (coarseAtMax && coarseDrivesMax))) {
             state_.iAccumulator += coarseTrim;
@@ -265,6 +282,14 @@ void CalculationController::piLoop(const OpMode mode) {
                 state_.iAccumulator = static_cast<double>(state_.dacMinValue);
             if (state_.iAccumulator > static_cast<double>(state_.dacMaxValue))
                 state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
+
+            // If this trim pulled the accumulator off a rail, suppress the I-term
+            // for one full coarseTrimPeriod so the trim has time to work before
+            // the I-term can drain it back to the rail.
+            if (trimAway) {
+                state_.iTermSuppressCount = state_.coarseTrimPeriod;
+                state_.iRemainder         = 0.0;
+            }
         }
 
         state_.lastCoarseTrim = coarseTrim;
@@ -294,7 +319,7 @@ void CalculationController::lockDetection(const OpMode mode) {
         return;
     }
 
-    const double absFiltered = abs(state_.ticCorrectedNetValueFiltered);
+    const double absFiltered = fabs(state_.ticCorrectedNetValueFiltered);
 
     if (state_.ppsLocked) {
         // Already locked — unlock immediately if the filtered error exceeds the unlock threshold.
