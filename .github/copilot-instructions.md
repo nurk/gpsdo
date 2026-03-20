@@ -28,7 +28,7 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 - **Do not modify `archive/OriginalCode.cpp`**. It is a read-only
   reference for the original ATmega328p behaviour. Consult it only to
   understand legacy intent; do not port from it directly.
-- **Do not use the original code as a template.** Tom wants his own clean
+- **Do not use the original code as a template.** He wants his own clean
   implementation.
 - **No magic numbers.** All hardware constants belong in `src/Constants.h`
   as named `constexpr` values.
