@@ -42,8 +42,8 @@ private:
     // If isLatitude==true, appends N or S; otherwise appends E or W.
     static void formatDMS(double value, char* out, bool isLatitude);
 
-    int currentPage_ = 0;
-    int pageCount_ = 4;
+    int currentPage_                = 0;
+    int pageCount_                  = 4;
     unsigned long lastUpdateMillis_ = 0;
 
     // Track operation mode so pages can indicate hold/run

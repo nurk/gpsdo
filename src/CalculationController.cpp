@@ -16,7 +16,7 @@ CalculationController::CalculationController(const SetDacFn setDac,
 void CalculationController::calculate(const int32_t localTimerCounter,
                                       const int32_t localTicValue,
                                       const unsigned long lastOverflow,
-                                      const OpMode mode) {
+                                      const OpMode opMode) {
     timeKeeping(lastOverflow);
 
     if (state_.isFirstTic) {
@@ -29,9 +29,9 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     ticLinearization(localTicValue);
     ticPreFilter();
     computeFrequencyError();
-    piLoop(mode);
-    lockDetection(mode);
-    storeState();
+    piLoop(opMode);
+    lockDetection(opMode);
+    storeState(opMode);
 
 #ifdef DEBUG_CALCULATION
     Serial2.print(F("Time: "));
@@ -75,7 +75,7 @@ void CalculationController::calculate(const int32_t localTimerCounter,
     Serial2.print(F(", Temp Board: "));
     Serial2.print(readTemp_(), 2);
     Serial2.print(F(", Mode: "));
-    Serial2.println(mode);
+    Serial2.println(opMode);
 #endif
 
     updateSnapshots(localTimerCounter);
@@ -87,8 +87,7 @@ void CalculationController::timeKeeping(const unsigned long lastOverflow) {
     if (state_.time - state_.timeOld > 1) {
         state_.missedPpsCounter++;
         state_.timeSinceMissedPps = 0;
-    }
-    else {
+    } else {
         state_.timeSinceMissedPps++;
     }
 }
@@ -101,8 +100,8 @@ void CalculationController::timerCounterNormalization(const int32_t localTimerCo
         timerCounterValueReal += MODULO;
     }
     state_.timerCounterValueReal = timerCounterValueReal;
-    state_.timerCounterValueOld = localTimerCounter;
-    state_.timerCounterError = static_cast<int32_t>(COUNTS_PER_PPS - timerCounterValueReal - lastOverflow * MODULO);
+    state_.timerCounterValueOld  = localTimerCounter;
+    state_.timerCounterError     = static_cast<int32_t>(COUNTS_PER_PPS - timerCounterValueReal - lastOverflow * MODULO);
 }
 
 void CalculationController::ticLinearization(const int32_t localTicValue) {
@@ -132,7 +131,7 @@ void CalculationController::ticLinearization(const int32_t localTicValue) {
 
     state_.ticValueCorrectionOffset = linearize(state_.ticOffset);
     // ReSharper disable once CppRedundantCastExpression
-    state_.ticValueCorrection = linearize(static_cast<double>(state_.ticValue));
+    state_.ticValueCorrection   = linearize(static_cast<double>(state_.ticValue));
     state_.ticCorrectedNetValue = state_.ticValueCorrection - state_.ticValueCorrectionOffset;
     // the expectation is that ticCorrectedNetValue is now centred on zero at ticOffset, so the PI loop can treat it as a signed error value.
 }
@@ -140,7 +139,7 @@ void CalculationController::ticLinearization(const int32_t localTicValue) {
 void CalculationController::ticPreFilter() {
     if (!state_.ticFilterSeeded) {
         state_.ticCorrectedNetValueFiltered = state_.ticCorrectedNetValue;
-        state_.ticFilterSeeded = true;
+        state_.ticFilterSeeded              = true;
         return;
     }
 
@@ -205,27 +204,26 @@ void CalculationController::piLoop(const OpMode mode) {
     // Likewise for the maximum clamp. This prevents the integrator from winding
     // up indefinitely when the required EFC voltage is outside the DAC range.
     // (Electronic Frequency Control)
-    const bool atMin = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
-    const bool atMax = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
+    const bool atMin             = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
+    const bool atMax             = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
     const bool stepDrivesIntoMin = iStepFloor < 0.0;
     const bool stepDrivesIntoMax = iStepFloor > 0.0;
 
     if ((atMin && stepDrivesIntoMin) || (atMax && stepDrivesIntoMax)) {
         // Step would push further into the rail — discard it.
         state_.iRemainder = 0.0;
-    }
-    else {
-        state_.iRemainder = iStep - iStepFloor; // carry the fractional part forward
+    } else {
+        state_.iRemainder   = iStep - iStepFloor; // carry the fractional part forward
         state_.iAccumulator += iStepFloor;
 
         // --- Clamp accumulator to DAC range ---
         if (state_.iAccumulator < static_cast<double>(state_.dacMinValue)) {
             state_.iAccumulator = static_cast<double>(state_.dacMinValue);
-            state_.iRemainder = 0.0;
+            state_.iRemainder   = 0.0;
         }
         if (state_.iAccumulator > static_cast<double>(state_.dacMaxValue)) {
             state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
-            state_.iRemainder = 0.0;
+            state_.iRemainder   = 0.0;
         }
     }
 
@@ -244,14 +242,14 @@ void CalculationController::piLoop(const OpMode mode) {
     //
     // Anti-windup: same rail checks as the fine I-term apply.
     state_.coarseErrorAccumulator += static_cast<double>(state_.timerCounterError);
-    state_.lastCoarseTrim = 0.0;
+    state_.lastCoarseTrim         = 0.0;
 
     if (state_.time % state_.coarseTrimPeriod == 0) {
-        const double coarseTrim = state_.coarseErrorAccumulator * state_.coarseTrimGain;
+        const double coarseTrim       = state_.coarseErrorAccumulator * state_.coarseTrimGain;
         state_.coarseErrorAccumulator = 0.0;
 
-        const bool coarseAtMin = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
-        const bool coarseAtMax = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
+        const bool coarseAtMin     = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
+        const bool coarseAtMax     = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
         const bool coarseDrivesMin = coarseTrim < 0.0;
         const bool coarseDrivesMax = coarseTrim > 0.0;
 
@@ -277,7 +275,7 @@ void CalculationController::piLoop(const OpMode mode) {
             ? static_cast<double>(state_.dacMaxValue)
             : dacOutput);
 
-    state_.dacValue = dacClamped;
+    state_.dacValue   = dacClamped;
     state_.dacVoltage = static_cast<float>(dacClamped) / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
     setDac_(dacClamped);
 }
@@ -285,7 +283,7 @@ void CalculationController::piLoop(const OpMode mode) {
 void CalculationController::lockDetection(const OpMode mode) {
     // Lock is only meaningful while the PI loop is running.
     if (mode != RUN) {
-        state_.ppsLocked = false;
+        state_.ppsLocked    = false;
         state_.ppsLockCount = 0;
         return;
     }
@@ -295,11 +293,10 @@ void CalculationController::lockDetection(const OpMode mode) {
     if (state_.ppsLocked) {
         // Already locked — unlock immediately if the filtered error exceeds the unlock threshold.
         if (absFiltered > UNLOCK_THRESHOLD) {
-            state_.ppsLocked = false;
+            state_.ppsLocked    = false;
             state_.ppsLockCount = 0;
         }
-    }
-    else {
+    } else {
         // Not yet locked — the filtered phase error must stay within ±LOCK_THRESHOLD
         // for 2 × ticFilterConst consecutive seconds to declare lock.
         //
@@ -320,8 +317,7 @@ void CalculationController::lockDetection(const OpMode mode) {
             if (state_.ppsLockCount >= state_.ticFilterConst * 2) {
                 state_.ppsLocked = true;
             }
-        }
-        else {
+        } else {
             // Any excursion outside either threshold resets the counter.
             state_.ppsLockCount = 0;
         }
@@ -329,59 +325,60 @@ void CalculationController::lockDetection(const OpMode mode) {
 }
 
 void CalculationController::updateSnapshots(const int32_t localTimerCounter) {
-    state_.timeOld = state_.time;
-    state_.timerCounterValueOld = localTimerCounter;
-    state_.ticValueOld = state_.ticValue;
+    state_.timeOld               = state_.time;
+    state_.timerCounterValueOld  = localTimerCounter;
+    state_.ticValueOld           = state_.ticValue;
     state_.ticValueCorrectionOld = state_.ticValueCorrection;
 }
 
-void CalculationController::storeState() {
+void CalculationController::storeState(const OpMode opMode) {
     // Three-phase save cadence based purely on elapsed time — no resetting counters.
     //
     //   Phase 1 — t < 3600 s  (first hour):        save every 10 minutes (600 s)
     //   Phase 2 — t < 43200 s (first 12 hours):    save every hour       (3600 s)
     //   Phase 3 — t >= 43200 s (after 12 hours):   save every 12 hours   (43200 s)
     //
-    // state_.time is seconds since boot and is always increasing, so each phase
+    // state_.storeStateTime is seconds since RUN and is always increasing, so each phase
     // boundary is crossed exactly once and the modulo check gives the right cadence
     // within each phase with no counter resets needed.
 
-    if (state_.time <= 0) return;
+    if (state_.time <= 0 || opMode != RUN) return;
 
-    constexpr int32_t kTenMinutes   = 600;
-    constexpr int32_t kOneHour      = 3600;
-    constexpr int32_t kTwelveHours  = 43200;
+    state_.storeStateTime++;
 
-    if (state_.time < kOneHour) {
+    constexpr int32_t kOneHour     = 3600;
+    constexpr int32_t kTwelveHours = 43200;
+
+    if (state_.storeStateTime < kOneHour) {
         // Phase 1: save every 10 minutes.
-        if (state_.time % kTenMinutes == 0) {
+        constexpr int32_t kTenMinutes = 600;
+        if (state_.storeStateTime % kTenMinutes == 0) {
             saveState_(getEEPROMState());
         }
-    } else if (state_.time < kTwelveHours) {
+    } else if (state_.storeStateTime < kTwelveHours) {
         // Phase 2: save every hour.
-        if (state_.time % kOneHour == 0) {
+        if (state_.storeStateTime % kOneHour == 0) {
             saveState_(getEEPROMState());
         }
     } else {
         // Phase 3: save every 12 hours.
-        if (state_.time % kTwelveHours == 0) {
+        if (state_.storeStateTime % kTwelveHours == 0) {
             saveState_(getEEPROMState());
         }
     }
 }
 
 EEPROMState CalculationController::getEEPROMState() const {
-    EEPROMState eepromState;
-    eepromState.dacValue    = state_.dacValue;
-    eepromState.iAccumulator = state_.iAccumulator;
-    return eepromState;
+    return {
+        state_.dacValue,
+        state_.iAccumulator,
+    };
 }
 
 void CalculationController::setEEPROMState(const EEPROMState& eepromState) {
-    state_.dacValue      = eepromState.dacValue;
-    state_.dacVoltage    = static_cast<float>(eepromState.dacValue) /
-                           static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
-    state_.iAccumulator  = eepromState.iAccumulator;
-    state_.iRemainder    = 0.0; // always start fresh — remainder from previous session is meaningless
+    state_.dacValue     = eepromState.dacValue;
+    state_.dacVoltage   = static_cast<float>(eepromState.dacValue) / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
+    state_.iAccumulator = eepromState.iAccumulator;
+    state_.iRemainder   = 0.0; // always start fresh — remainder from previous session is meaningless
     setDac_(eepromState.dacValue); // drive the hardware immediately
 }

@@ -13,6 +13,7 @@ public:
     }
 
     void begin();
+    bool isValid() const { return isValid_; }
     EEPROMState loadState() const;
     void saveState(const EEPROMState& eepromState);
     void invalidate();
@@ -20,10 +21,10 @@ public:
 private:
     // Magic must be updated whenever EEPROMState changes layout.
     // 0x47505301 = "GPS" + version byte 0x01.
-    static constexpr uint32_t kMagic = 0x47505301UL;
-    static constexpr uint16_t kBankSize = 2048; // bytes per bank
-    static constexpr uint8_t kBankCount = 8; // total banks (2048*8 = 16384 bytes)
-    static constexpr uint16_t kHeaderSize = 8; // 4 bytes magic + 4 bytes seq
+    static constexpr uint32_t kMagic          = 0x47505301UL;
+    static constexpr uint16_t kBankSize       = 2048; // bytes per bank
+    static constexpr uint8_t kBankCount       = 8; // total banks (2048*8 = 16384 bytes)
+    static constexpr uint16_t kHeaderSize     = 8; // 4 bytes magic + 4 bytes seq
     static constexpr uint32_t kEepromBaseAddr = 0;
 
     // Exact number of bytes written to / read from EEPROM per bank.
@@ -35,7 +36,7 @@ private:
     void writeLE32(uint8_t* p, uint32_t v) const noexcept;
 
     I2C_eeprom& eeprom_;
-    bool isValid_ = false;
+    bool isValid_       = false;
     uint8_t activeBank_ = 0xFF;
     uint32_t activeSeq_ = 0;
 };

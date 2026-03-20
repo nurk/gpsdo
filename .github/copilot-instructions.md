@@ -98,6 +98,8 @@ timerCounterError           int32_t    — COUNTS_PER_PPS - real - overflows*MOD
 
 time                        int32_t    — seconds since start
 timeOld                     int32_t    — time at previous PPS
+storeStateTime              int32_t    — seconds elapsed in RUN mode; incremented only when opMode == RUN;
+                                         drives the three-phase EEPROM save cadence in storeState()
 
 missedPpsCounter            int32_t    — cumulative missed PPS count
 timeSinceMissedPps          int32_t    — seconds since last missed PPS
@@ -146,17 +148,26 @@ x3Coefficient               double     — cubic linearisation coeff (stored pre
 ```
 dacValue                    uint16_t   — last settled DAC output value
 iAccumulator                double     — integrator state (DAC counts)
-
-isValid                     bool       — IN-MEMORY ONLY sentinel; never written to or read from EEPROM.
-                                         Set true by ExternalEEPROMController::loadState() after a
-                                         successful read. Always false on a cold start (no valid bank).
 ```
+
+`EEPROMState` is a plain aggregate (no default member initializers). There is no
+`isValid` field — warm/cold boot distinction is tracked by `ExternalEEPROMController::isValid_`
+(private) and exposed via `isValid()` (public accessor). The in-memory `isValid` sentinel
+that existed in earlier versions has been removed.
+
+A compile-time cold-start fallback is defined in `Constants.h`:
+```cpp
+constexpr EEPROMState DEFAULT_EEPROM_STATE = {
+    DAC_INITIAL_VALUE,  // dacValue
+    DAC_INITIAL_VALUE,  // iAccumulator — cold-start seed, matches dacValue
+};
+```
+`loadState()` returns `DEFAULT_EEPROM_STATE` when no valid EEPROM bank is found.
 
 **Rules:**
 - `iRemainder` is **never** stored — it is a fractional carry-forward meaningful only within a
   continuous run. It is always initialised to 0.0 on boot.
 - `dacVoltage` is **never** stored — it is always derived from `dacValue` on load.
-- `isValid` is **never** written to EEPROM — it is set only after a successful read.
 - Bump the `kMagic` version byte in `ExternalEEPROMController.h` (`0x47505301` → `0x47505302`
   etc.) whenever `EEPROMState`'s stored layout changes. This causes stale banks to be rejected
   on the next boot.
@@ -176,8 +187,11 @@ isValid                     bool       — IN-MEMORY ONLY sentinel; never writte
   old header is still intact, so the previous bank remains valid on next boot.
 - **`begin()`:** scans all banks, finds the highest valid sequence number (`>`
   comparison — deterministic on tie). Sets `isValid_` and `activeBank_`.
-- **`loadState()`:** reads the active bank, deserialises fields explicitly
-  (no blind `memcpy`), sets `isValid = true` in the returned struct.
+- **`isValid()`:** public accessor — returns `isValid_`. Used in `setup()` to log
+  warm vs cold boot.
+- **`loadState()`:** if `isValid_`, reads the active bank and deserialises fields
+  explicitly (no blind `memcpy`). If not valid, returns `DEFAULT_EEPROM_STATE`.
+  `EEPROMState` no longer contains an `isValid` field — use `isValid()` instead.
 - **`saveState()`:** serialises fields explicitly, writes payload then header to
   the next bank, updates `activeBank_` and `activeSeq_`.
 - **`invalidate()`:** wipes magic + seq on all banks (used via serial 'i' command).
@@ -224,10 +238,13 @@ calculate()
   │                                Drives LOCK_LED via ppsLocked (written in main loop)
   │                                No iDrift guard — phase condition alone is sufficient (see run7/run8 notes)
   ├── storeState()               — periodic EEPROM save via saveState_ callback
-  │                                Phase 1 (t < 3600 s):   save every 10 minutes
-  │                                Phase 2 (t < 43200 s):  save every hour
-  │                                Phase 3 (t ≥ 43200 s):  save every 12 hours
-  │                                Uses state_.time directly (no resetting counters) — phases crossed exactly once.
+  │                                No-op when opMode != RUN (no saves during WARMUP or HOLD).
+  │                                state_.storeStateTime incremented each RUN tick; drives save cadence.
+  │                                Phase 1 (storeStateTime < 3600 s):   save every 10 minutes
+  │                                Phase 2 (storeStateTime < 43200 s):  save every hour
+  │                                Phase 3 (storeStateTime ≥ 43200 s):  save every 12 hours
+  │                                Uses storeStateTime (not state_.time) — phases crossed exactly once
+  │                                regardless of how long WARMUP ran.
   └── updateSnapshots()          — copy current values to *Old fields
 ```
 
@@ -236,12 +253,15 @@ The `mode` parameter (`RUN` / `HOLD` / `WARMUP`) gates both `piLoop()` and `lock
 ### Boot-time EEPROM seeding (in `setup()`)
 ```
 externalEepromController.begin()   — scan all banks, find highest valid seq
-loadState()                        — returns EEPROMState with isValid = true/false
-if isValid:
-    setEEPROMState()               — restores dacValue + iAccumulator; derives dacVoltage;
-                                     zeroes iRemainder; calls setDac_() immediately
-else:
-    setDacValue(DAC_INITIAL_VALUE) — cold start: use compile-time default
+loadState()                        — returns DEFAULT_EEPROM_STATE (cold) or EEPROM values (warm)
+setEEPROMState()                   — always called unconditionally:
+                                     restores dacValue + iAccumulator; derives dacVoltage;
+                                     zeroes iRemainder; calls setDac_() immediately.
+                                     On cold boot DEFAULT_EEPROM_STATE seeds both fields from
+                                     DAC_INITIAL_VALUE, so behaviour is identical to old cold-start path.
+isValid()                          — checked after setEEPROMState() for log message only:
+                                     "Warm boot: EEPROM state loaded" or
+                                     "Cold boot: no valid EEPROM bank — using defaults"
 ```
 
 ---
@@ -494,11 +514,21 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - Corrects residual frequency offsets (e.g. OCXO running 156 ppb fast) that the fine TIC phase loop nulls in phase but cannot correct in frequency.
 - Identified as necessary from run9.log where `timerCounterReal` settled at −0.78 (i.e. ~156 ppb residual offset).
 
-### Step 8 — EEPROM persistence (next priority)
-- Save `iAccumulator` and tuning constants to EEPROM on power-down / periodically.
-- On power-up, seed `iAccumulator` from saved value to avoid long re-convergence warm-up.
-- EEPROM hardware (24LC128 at 0x50) is already initialised in `main.cpp` (`I2C_eeprom eeprom`). `saveState()` callback exists but is a stub (`// todo`).
-- Critical: run3/run3-2 showed EFC setpoint can vary by ~16,000 counts (~1.2 V) between runs due to thermal variation — without seeding, convergence can take 5000+ seconds.
+### ~~Step 8 — EEPROM persistence~~ ✅ Done
+- `ExternalEEPROMController` implemented with 24LC128, 8 rotating banks × 2048 bytes, wear-levelled round-robin.
+- Saves `dacValue` (uint16_t) + `iAccumulator` (double) = 10-byte payload per bank.
+- Write-before-header ordering: payload written first, header (magic + seq) committed last — power-safe.
+- `begin()` scans all banks on startup, selects highest valid sequence number.
+- `loadState()` returns `DEFAULT_EEPROM_STATE` on cold boot (seeds both fields from `DAC_INITIAL_VALUE`).
+- `setEEPROMState()` called unconditionally on boot — seeds DAC and integrator, zeroes `iRemainder`, drives DAC hardware immediately.
+- `isValid()` public accessor used in `setup()` to log warm vs cold boot.
+- Three-phase save cadence driven by `storeStateTime` (seconds in RUN mode only):
+  - Phase 1 (< 1 hour): every 10 minutes
+  - Phase 2 (< 12 hours): every hour
+  - Phase 3 (≥ 12 hours): every 12 hours
+- No saves during WARMUP or HOLD modes.
+- Serial `'s'` command triggers a manual save; `'i'` invalidates all banks (forces cold boot next restart).
+- `iRemainder` and `dacVoltage` are never stored — always re-derived on load.
 
 ---
 

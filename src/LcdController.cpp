@@ -41,10 +41,10 @@ void LcdController::update(const int page) {
 
 // Private helper moved out of drawPageZero
 void LcdController::formatDMS(const double value, char* out, const bool isLatitude) {
-    const double absVal = fabs(value);
-    const int deg = static_cast<int>(floor(absVal));
-    const double remMin = (absVal - deg) * 60.0;
-    const int minutes = static_cast<int>(floor(remMin));
+    const double absVal  = fabs(value);
+    const int deg        = static_cast<int>(floor(absVal));
+    const double remMin  = (absVal - deg) * 60.0;
+    const int minutes    = static_cast<int>(floor(remMin));
     const double seconds = (remMin - minutes) * 60.0;
 
     // Use strictly ASCII labels to avoid LCD character set mismatches.
@@ -53,15 +53,14 @@ void LcdController::formatDMS(const double value, char* out, const bool isLatitu
         // use sizeof fixed buffer (callers pass a 21-byte buffer)
         snprintf(out, 21, "%03d\xDF %02d'%04.1f\" %c",
                  deg, minutes, seconds, (value < 0.0) ? 'S' : 'N');
-    }
-    else {
+    } else {
         snprintf(out, 21, "%03d\xDF %02d'%04.1f\" %c",
                  deg, minutes, seconds, (value < 0.0) ? 'W' : 'E');
     }
 }
 
 void LcdController::drawPageZero() const {
-    const float temp = readTempFn();
+    const float temp     = readTempFn();
     const float ocxoTemp = readOCXOTempFn();
 
     lcd_.clear();
@@ -70,8 +69,7 @@ void LcdController::drawPageZero() const {
     char latBuf[21];
     if (gpsData_.isPositionValid) {
         formatDMS(gpsData_.latitude, latBuf, true);
-    }
-    else {
+    } else {
         snprintf(latBuf, sizeof(latBuf), "---\xDF --'--.-\"  ");
     }
     lcd_.setCursor(0, 0);
@@ -82,8 +80,7 @@ void LcdController::drawPageZero() const {
     char lonBuf[21];
     if (gpsData_.isPositionValid) {
         formatDMS(gpsData_.longitude, lonBuf, false);
-    }
-    else {
+    } else {
         snprintf(lonBuf, sizeof(lonBuf), "---\xDF --'--.-\"  ");
     }
     lcd_.setCursor(0, 1);
@@ -100,8 +97,7 @@ void LcdController::drawPageZero() const {
                  static_cast<unsigned>(gpsData_.day),
                  static_cast<unsigned>(gpsData_.month),
                  static_cast<unsigned>(gpsData_.year));
-    }
-    else {
+    } else {
         snprintf(datePart, sizeof(datePart), "--/--/----");
     }
     if (gpsData_.isTimeValid) {
@@ -109,8 +105,7 @@ void LcdController::drawPageZero() const {
                  static_cast<unsigned>(gpsData_.hour),
                  static_cast<unsigned>(gpsData_.minute),
                  static_cast<unsigned>(gpsData_.second));
-    }
-    else {
+    } else {
         snprintf(timePart, sizeof(timePart), "--:--:--");
     }
     char dateTimeBuf[21];
@@ -125,8 +120,7 @@ void LcdController::drawPageZero() const {
                  temp,
                  ocxoTemp,
                  static_cast<unsigned>(gpsData_.satellites));
-    }
-    else {
+    } else {
         snprintf(tempSatBuf, sizeof(tempSatBuf), "T1:%04.1f T2:%04.1f S:-",
                  static_cast<double>(temp),
                  static_cast<double>(ocxoTemp));

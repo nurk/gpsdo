@@ -5,9 +5,9 @@
 //   bytes 0–1  : dacValue    (uint16_t)
 //   bytes 2–9  : iAccumulator (double, 8 bytes)
 // Total: 10 bytes. Must match kPayloadSize in the header.
-static constexpr uint16_t kDacValueOffset       = 0;
-static constexpr uint16_t kIAccumulatorOffset   = kDacValueOffset + sizeof(uint16_t);
-static constexpr uint16_t kStoredPayloadSize    = kIAccumulatorOffset + sizeof(double);
+static constexpr uint16_t kDacValueOffset     = 0;
+static constexpr uint16_t kIAccumulatorOffset = kDacValueOffset + sizeof(uint16_t);
+static constexpr uint16_t kStoredPayloadSize  = kIAccumulatorOffset + sizeof(double);
 
 // Verify the stored size matches what the header advertises.
 // kPayloadSize in the header is defined as sizeof(uint16_t) + sizeof(double),
@@ -38,7 +38,7 @@ void ExternalEEPROMController::writeLE32(uint8_t* p, const uint32_t v) const noe
 void ExternalEEPROMController::begin() {
     // scan banks to find the highest valid seq
     uint32_t bestSeq = 0u;
-    int bestBank = -1;
+    int bestBank     = -1;
     uint8_t header[kHeaderSize];
 
     for (uint8_t b = 0; b < kBankCount; ++b) {
@@ -48,34 +48,32 @@ void ExternalEEPROMController::begin() {
         if (magic != kMagic) continue;
         const uint32_t seq = readLE32(header + 4);
         if (seq > bestSeq) {
-            bestSeq = seq;
+            bestSeq  = seq;
             bestBank = static_cast<int>(b);
         }
     }
 
     if (bestBank >= 0) {
-        isValid_ = true;
+        isValid_    = true;
         activeBank_ = static_cast<uint8_t>(bestBank);
-        activeSeq_ = bestSeq;
-    }
-    else {
-        isValid_ = false;
+        activeSeq_  = bestSeq;
+    } else {
+        isValid_    = false;
         activeBank_ = 0xFFu;
-        activeSeq_ = 0u;
+        activeSeq_  = 0u;
     }
 }
 
 EEPROMState ExternalEEPROMController::loadState() const {
-    EEPROMState eepromState; // isValid defaults to false
-    if (!isValid_) return eepromState;
+    EEPROMState eepromState = DEFAULT_EEPROM_STATE;
+    if (!isValid_) return eepromState; // cold start — return defaults
 
     const uint32_t addr = bankAddr(activeBank_) + kHeaderSize;
     eeprom_.readBlock(addr, g_payloadBuf, kStoredPayloadSize);
 
     // Deserialise fields explicitly — never read isValid from EEPROM.
-    memcpy(&eepromState.dacValue,     g_payloadBuf + kDacValueOffset,     sizeof(uint16_t));
+    memcpy(&eepromState.dacValue, g_payloadBuf + kDacValueOffset, sizeof(uint16_t));
     memcpy(&eepromState.iAccumulator, g_payloadBuf + kIAccumulatorOffset, sizeof(double));
-    eepromState.isValid = true; // set only after a successful read
 
     return eepromState;
 }
@@ -86,11 +84,11 @@ void ExternalEEPROMController::saveState(const EEPROMState& eepromState) {
 #endif
 
     // Serialise fields explicitly — never write isValid to EEPROM.
-    memcpy(g_payloadBuf + kDacValueOffset,     &eepromState.dacValue,     sizeof(uint16_t));
+    memcpy(g_payloadBuf + kDacValueOffset, &eepromState.dacValue, sizeof(uint16_t));
     memcpy(g_payloadBuf + kIAccumulatorOffset, &eepromState.iAccumulator, sizeof(double));
 
     // choose next bank and seq
-    const uint8_t  nextBank = isValid_ ? static_cast<uint8_t>((activeBank_ + 1) % kBankCount) : 0u;
+    const uint8_t nextBank  = isValid_ ? static_cast<uint8_t>((activeBank_ + 1) % kBankCount) : 0u;
     const uint32_t nextSeq  = isValid_ ? (activeSeq_ + 1u) : 1u;
     const uint32_t destAddr = bankAddr(nextBank);
 
@@ -99,7 +97,7 @@ void ExternalEEPROMController::saveState(const EEPROMState& eepromState) {
 
     // write magic and seq last — this atomically commits the bank
     uint8_t header[kHeaderSize];
-    writeLE32(header,     kMagic);
+    writeLE32(header, kMagic);
     writeLE32(header + 4, nextSeq);
     eeprom_.updateBlock(destAddr, header, kHeaderSize);
 
@@ -119,7 +117,7 @@ void ExternalEEPROMController::invalidate() {
         const uint32_t addr = bankAddr(b);
         eeprom_.updateBlock(addr, zeros, kHeaderSize);
     }
-    isValid_ = false;
+    isValid_    = false;
     activeBank_ = 0xFFu;
-    activeSeq_ = 0u;
+    activeSeq_  = 0u;
 }

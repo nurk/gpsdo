@@ -16,7 +16,7 @@ public:
     void calculate(int32_t localTimerCounter,
                    int32_t localTicValue,
                    unsigned long lastOverflow,
-                   OpMode mode);
+                   OpMode opMode);
 
     const ControlState& state() const { return state_; }
     ControlState& state() { return state_; }
@@ -41,7 +41,7 @@ private:
     void piLoop(OpMode mode);
     void lockDetection(OpMode mode);
     void updateSnapshots(int32_t localTimerCounter);
-    void storeState();
+    void storeState(OpMode opMode);
 };
 
 #endif // CALCULATION_CONTROLLER_H

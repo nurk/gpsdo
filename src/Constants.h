@@ -10,9 +10,9 @@ enum OpMode {
     WARMUP
 };
 
-constexpr uint16_t DAC_MAX_VALUE = 65535;
-constexpr float DAC_VREF = 5.0f; // REF5050 voltage reference for the DAC (V)
-constexpr float ADC_VREF = 1.1f; // ATmega4808 internal reference for the TIC ADC (V)
+constexpr uint16_t DAC_MAX_VALUE       = 65535;
+constexpr float DAC_VREF               = 5.0f; // REF5050 voltage reference for the DAC (V)
+constexpr float ADC_VREF               = 1.1f; // ATmega4808 internal reference for the TIC ADC (V)
 constexpr uint16_t WARMUP_TIME_DEFAULT = 600; // seconds
 
 // Best-guess EFC starting point for the next power-on, in DAC counts.
@@ -27,21 +27,21 @@ constexpr uint16_t DAC_INITIAL_VALUE = 22880; // midpoint of run9/run10 settled 
 
 struct GpsData {
     bool isPositionValid = false;
-    double latitude = 0.0;
-    double longitude = 0.0;
+    double latitude      = 0.0;
+    double longitude     = 0.0;
 
     bool isSatellitesValid = false;
-    uint32_t satellites = 0;
+    uint32_t satellites    = 0;
 
     bool isDateValid = false;
-    uint16_t year = 0;
-    uint8_t month = 0;
-    uint8_t day = 0;
+    uint16_t year    = 0;
+    uint8_t month    = 0;
+    uint8_t day      = 0;
 
-    bool isTimeValid = false;
-    uint8_t hour = 0;
-    uint8_t minute = 0;
-    uint8_t second = 0;
+    bool isTimeValid    = false;
+    uint8_t hour        = 0;
+    uint8_t minute      = 0;
+    uint8_t second      = 0;
     uint8_t centisecond = 0;
 };
 
@@ -49,38 +49,39 @@ struct ControlState {
     bool isFirstTic = true; // true until the first PPS tick has been used to seed *Old snapshots
 
     uint16_t dacValue = DAC_INITIAL_VALUE;
-    float dacVoltage = static_cast<float>(DAC_INITIAL_VALUE) / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
+    float dacVoltage  = static_cast<float>(DAC_INITIAL_VALUE) / static_cast<float>(DAC_MAX_VALUE) * DAC_VREF;
     int32_t holdValue = 0;
 
-    int32_t timerCounterValueOld = 0;
+    int32_t timerCounterValueOld  = 0;
     int32_t timerCounterValueReal = 0;
-    int32_t timerCounterError = 0;
+    int32_t timerCounterError     = 0;
 
-    int32_t time = 0;
-    int32_t timeOld = 0;
+    int32_t time           = 0;
+    int32_t timeOld        = 0;
+    int32_t storeStateTime = 0;
 
-    int32_t missedPpsCounter = 0;
+    int32_t missedPpsCounter   = 0;
     int32_t timeSinceMissedPps = 0;
 
-    int32_t ticValue = 0;
-    int32_t ticValueOld = 0;
-    double ticValueCorrection = 0.0; // linearized tic (raw)
-    double ticValueCorrectionOld = 0.0;
-    double ticValueCorrectionOffset = 0.0; // linearized value at ticOffset (zero reference)
-    double ticCorrectedNetValue = 0.0; // ticValueCorrection - ticValueCorrectionOffset
+    int32_t ticValue                    = 0;
+    int32_t ticValueOld                 = 0;
+    double ticValueCorrection           = 0.0; // linearized tic (raw)
+    double ticValueCorrectionOld        = 0.0;
+    double ticValueCorrectionOffset     = 0.0; // linearized value at ticOffset (zero reference)
+    double ticCorrectedNetValue         = 0.0; // ticValueCorrection - ticValueCorrectionOffset
     double ticCorrectedNetValueFiltered = 0.0;
-    double ticFrequencyError = 0.0;
-    bool ticFilterSeeded = false; // true after the EMA has been seeded with the first real measurement
-    int32_t ticFilterConst = 16;
-    double ticDelta = 0.0;
+    double ticFrequencyError            = 0.0;
+    bool ticFilterSeeded                = false; // true after the EMA has been seeded with the first real measurement
+    int32_t ticFilterConst              = 16;
+    double ticDelta                     = 0.0;
 
     // --- PI loop state ---
     double iAccumulator = DAC_INITIAL_VALUE; // integrator state (DAC counts); seeded from DAC_INITIAL_VALUE
-    double iRemainder = 0.0; // fractional carry-forward to avoid truncation drift
-    int32_t timeConst = 32; // loop time constant in seconds
-    double gain = 12.0; // DAC counts per linearised TIC count (EFC sensitivity)
-    double damping = 3.0; // P/I ratio — higher = more damped, slower pull-in
-    double pTerm = 0.0; // proportional term (DAC counts)
+    double iRemainder   = 0.0; // fractional carry-forward to avoid truncation drift
+    int32_t timeConst   = 32; // loop time constant in seconds
+    double gain         = 12.0; // DAC counts per linearised TIC count (EFC sensitivity)
+    double damping      = 3.0; // P/I ratio — higher = more damped, slower pull-in
+    double pTerm        = 0.0; // proportional term (DAC counts)
 
     // --- DAC safety limits ---
     uint16_t dacMinValue = 0;
@@ -97,12 +98,12 @@ struct ControlState {
     // slow outer loop. Default 0.5 means one coarse tick of persistent error
     // contributes 0.5 DAC counts per trim period.
     double coarseErrorAccumulator = 0.0; // running sum of timerCounterError
-    double coarseTrimGain = 0.5; // DAC counts per accumulated coarse count per period
-    int32_t coarseTrimPeriod = 64; // seconds between coarse trim steps (must be > timeConst)
-    double lastCoarseTrim = 0.0; // most recent coarse trim applied (logged each PPS; 0 on non-trim ticks)
+    double coarseTrimGain         = 0.5; // DAC counts per accumulated coarse count per period
+    int32_t coarseTrimPeriod      = 64; // seconds between coarse trim steps (must be > timeConst)
+    double lastCoarseTrim         = 0.0; // most recent coarse trim applied (logged each PPS; 0 on non-trim ticks)
 
     // --- PPS Locked ---
-    bool ppsLocked = false;
+    bool ppsLocked       = false;
     int32_t ppsLockCount = 0; // consecutive seconds within LOCK_THRESHOLD; lock declared at 2 × ticFilterConst
 
     double ticOffset = 500.0; // expected centre of TIC range (counts)
@@ -119,16 +120,20 @@ struct ControlState {
 struct EEPROMState {
     // Fields stored to EEPROM — keep this struct stable; bump kMagic version byte
     // in ExternalEEPROMController.h whenever the layout changes.
-    uint16_t dacValue = 0;      // last settled DAC output value
-    double iAccumulator = 0.0;  // integrator state (DAC counts)
+    uint16_t dacValue; // last settled DAC output value
+    double iAccumulator; // integrator state (DAC counts)
+};
 
-    // In-memory sentinel only — never written to or read from EEPROM.
-    // Set to true by loadState() after a successful read; false on a cold start.
-    bool isValid = false;
+// DEFAULT_EEPROM_STATE represents a cold-start fallback (no valid EEPROM bank found).
+// dacValue and iAccumulator are both seeded from DAC_INITIAL_VALUE so the loop starts
+// from the best-known EFC setpoint rather than 0 or mid-scale.
+constexpr EEPROMState DEFAULT_EEPROM_STATE = {
+    DAC_INITIAL_VALUE, // dacValue
+    DAC_INITIAL_VALUE, // iAccumulator — cold-start seed, matches dacValue
 };
 
 constexpr int32_t COUNTS_PER_PPS = 5000000;
-constexpr int32_t MODULO = 50000;
+constexpr int32_t MODULO         = 50000;
 
 constexpr double TIC_MIN = 12.0;
 constexpr double TIC_MAX = 1012.0;
@@ -136,7 +141,7 @@ constexpr double TIC_MAX = 1012.0;
 // Lock detection thresholds (in linearised TIC counts, same units as ticCorrectedNetValueFiltered)
 // Lock is declared after 2 × ticFilterConst consecutive seconds below LOCK_THRESHOLD.
 // Unlock occurs immediately when the filtered error exceeds UNLOCK_THRESHOLD (hysteresis).
-constexpr double LOCK_THRESHOLD = 50.0; // filtered phase error must stay within ±50 counts to declare lock
+constexpr double LOCK_THRESHOLD   = 50.0; // filtered phase error must stay within ±50 counts to declare lock
 constexpr double UNLOCK_THRESHOLD = 100.0; // filtered phase error must exceed ±100 counts to declare unlock
 
 
@@ -154,12 +159,12 @@ constexpr double UNLOCK_THRESHOLD = 100.0; // filtered phase error must exceed �
 constexpr double PTERM_MAX_COUNTS = 2000.0;
 
 
-using SetWarmupTimeFn = void(*)(uint16_t seconds);
-using SetDacFn = void(*)(uint16_t value);
-using ReadTempFn = float(*)();
-using ReadOCXOTempFn = float(*)();
-using SaveStateFn = void(*)(const EEPROMState& eepromState);
+using SetWarmupTimeFn     = void(*)(uint16_t seconds);
+using SetDacFn            = void(*)(uint16_t value);
+using ReadTempFn          = float(*)();
+using ReadOCXOTempFn      = float(*)();
+using SaveStateFn         = void(*)(const EEPROMState& eepromState);
 using ManuallySaveStateFn = void(*)();
-using SetTCA0CountFn = void(*)(uint16_t count);
-using SetOpModeFn = void(*)(OpMode mode, int32_t holdValue);
+using SetTCA0CountFn      = void(*)(uint16_t count);
+using SetOpModeFn         = void(*)(OpMode mode, int32_t holdValue);
 #endif //GPSDO_V1_0_CONSTANTS_H
