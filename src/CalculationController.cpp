@@ -95,9 +95,15 @@ void CalculationController::timeKeeping(const unsigned long lastOverflow) {
 void CalculationController::timerCounterNormalization(const int32_t localTimerCounter,
                                                       const unsigned long lastOverflow) {
     int32_t timerCounterValueReal = localTimerCounter - state_.timerCounterValueOld;
-    // wrap around detection
+    // Wrap-around detection — handle both directions.
+    // TCA0 counts 0 … MODULO-1.  The raw difference can be anywhere in
+    // [-(MODULO-1) … +(MODULO-1)].  We expect a value very close to 0
+    // (a few counts of OCXO jitter).  Any magnitude > MODULO/2 means the
+    // counter wrapped; correct it back into the [-MODULO/2 … +MODULO/2] range.
     if (timerCounterValueReal < -(MODULO / 2)) {
-        timerCounterValueReal += MODULO;
+        timerCounterValueReal += MODULO;   // counter wrapped downward (captured value jumped back near 0)
+    } else if (timerCounterValueReal > (MODULO / 2)) {
+        timerCounterValueReal -= MODULO;   // counter wrapped upward   (e.g. raw +49999 → corrected -1)
     }
     state_.timerCounterValueReal = timerCounterValueReal;
     state_.timerCounterValueOld  = localTimerCounter;

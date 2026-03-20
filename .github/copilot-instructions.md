@@ -573,6 +573,39 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
   - Each tick while `iTermSuppressCount > 0`, the I-step is skipped entirely and the count decrements.
   - This gives the coarse trim one full period to push the accumulator clear before the I-term resumes.
 
+### log 2026-03-20-run3.log
+- **Run T150–T6782 (6632 seconds total).** Mode transition WARMUP→RUN at T604. ✅
+- **Warm boot confirmed:** `iAccumulator` seeded at 22880.0 from EEPROM. ✅
+- **LOCKED declared** and held continuously: `ppsLockCount = 32` throughout. ✅
+- `iAccumulator` stable at ~22,960–22,990 counts = 1.753 V. Consistent with run1-bis. ✅
+- **The loop did NOT crash.** All glitch events were correctly absorbed. ✅
+- **Three glitch types observed around T2280–T2319:**
+
+  **Type 1 — GPS ±10 ms timing jitter (T2280/T2281, T2290):**
+  - `timerCounterError` = ±50000 (GPS PPS arrived ~10 ms early, then compensated).
+  - These are genuine GPS timing anomalies, not software bugs.
+  - `COARSE_ERROR_SANITY_LIMIT = 50` correctly blocked all three from `coarseErrorAccumulator`. ✅
+  - `iAccumulator` unchanged on these ticks. ✅
+
+  **Type 2 — Multi-second PPS gaps (T2292 through T2305, time jumps of 2–4 s):**
+  - The GPS module suppressed its PPS output for 2–4 seconds (probable brief loss of GPS lock).
+  - Each of these ticks had `lastOverflow` = 200–400, clamped to 200, producing `timerCounterError ≈ -5,000,000`.
+  - Sanity guard correctly blocked all of them. `iAccumulator` unchanged. ✅
+  - Recovery was immediate — the next normal tick resumed clean operation. ✅
+
+  **Type 3 — Wrap-around detection miss (T2319, TCReal = 49999):**
+  - `timerCounterValueReal = localTimerCounter - timerCounterValueOld` produced +49999 when the TCA0
+    counter captured a value just below the previous snapshot (upward wrap).
+  - The old wrap-around code only corrected **downward** wraps (`if < -MODULO/2: += MODULO`).
+  - An upward wrap (diff > +MODULO/2) was not corrected, giving `TCReal = +49999` instead of `−1`.
+  - Impact on this run was benign (sanity guard blocked coarse accumulator; pTerm clamped).
+  - **Fix applied:** added `else if (timerCounterValueReal > (MODULO / 2)) { -= MODULO; }` to
+    `timerCounterNormalization()`. Both wrap directions are now handled symmetrically.
+
+- No lock drops across the full 6632-second run. ✅
+- `coarseErrorAccumulator` remained in the expected range (≤54 counts at end). ✅
+- No missed PPS events triggered (all gaps handled as multi-second PPS intervals). ✅
+
 ---
 
 ## Coding conventions
