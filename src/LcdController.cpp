@@ -10,6 +10,7 @@ LcdController::LcdController(hd44780_I2Cexp& lcd,
       calculationController_(calculationController),
       readTempFn(readTempFn),
       readOCXOTempFn(readOCXOTempFn) {
+    timeZoneInfo_.setLocation_P(Brussels);
 }
 
 void LcdController::update(const int page, const OpMode opMode) {
@@ -93,25 +94,25 @@ void LcdController::drawPageZero() const {
     lcd_.print(F("Lon: "));
     lcd_.print(lonBuf);
 
-    // Row 2: Date and Time on one line: DD/MM/YYYY HH:MM:SS
-    // Show date or placeholder separately from time
+    // Row 2: Date and Time in local time (CET/CEST via TimeZoneInfo)
     lcd_.setCursor(0, 2);
     char datePart[12];
     char timePart[10];
-    if (gpsData_.isDateValid) {
-        snprintf(datePart, sizeof(datePart), "%02u/%02u/%04u",
-                 static_cast<unsigned>(gpsData_.day),
-                 static_cast<unsigned>(gpsData_.month),
-                 static_cast<unsigned>(gpsData_.year));
+    const time_t localTime = const_cast<LcdController*>(this)->convertGpsTime();
+    if (localTime != 0) {
+        // Break the local Unix timestamp back into calendar fields
+        tm local = {};
+        gmtime_r(&localTime, &local);
+        snprintf(datePart, sizeof(datePart), "%02d/%02d/%04d",
+                 local.tm_mday,
+                 local.tm_mon + 1,
+                 local.tm_year + 1900);
+        snprintf(timePart, sizeof(timePart), "%02d:%02d:%02d",
+                 local.tm_hour,
+                 local.tm_min,
+                 local.tm_sec);
     } else {
         snprintf(datePart, sizeof(datePart), "--/--/----");
-    }
-    if (gpsData_.isTimeValid) {
-        snprintf(timePart, sizeof(timePart), "%02u:%02u:%02u",
-                 static_cast<unsigned>(gpsData_.hour),
-                 static_cast<unsigned>(gpsData_.minute),
-                 static_cast<unsigned>(gpsData_.second));
-    } else {
         snprintf(timePart, sizeof(timePart), "--:--:--");
     }
     char dateTimeBuf[21];
@@ -231,4 +232,26 @@ void LcdController::giveActionFeedback(const String& actionFeedback) {
     lcdMode_             = ACTION;
     actionFeedback_      = actionFeedback;
     actionModeEndMillis_ = millis() + 2000;
+}
+
+time_t LcdController::convertGpsTime() {
+    if (!gpsData_.isDateValid || !gpsData_.isTimeValid) {
+        return 0; // Invalid time
+    }
+
+    tm utc       = {};
+    utc.tm_year  = static_cast<int>(gpsData_.year) - 1900;
+    utc.tm_mon   = static_cast<int8_t>(gpsData_.month - 1u);
+    utc.tm_mday  = static_cast<int8_t>(gpsData_.day);
+    utc.tm_hour  = static_cast<int8_t>(gpsData_.hour);
+    utc.tm_min   = static_cast<int8_t>(gpsData_.minute);
+    utc.tm_sec   = static_cast<int8_t>(gpsData_.second);
+    utc.tm_isdst = 0;
+
+    const time_t utcTime = mktime(&utc);
+    if (utcTime == static_cast<time_t>(-1)) {
+        return 0; // mktime failed
+    }
+
+    return static_cast<time_t>(timeZoneInfo_.utc2local(static_cast<int32_t>(utcTime)));
 }

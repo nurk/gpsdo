@@ -8,6 +8,9 @@
 #include <hd44780.h>
 #include <hd44780ioClass/hd44780_I2Cexp.h>
 #include <CalculationController.h>
+#include <TimeZoneInfo.h>
+#include <Brussels.h>
+#include <Time.h>
 
 class LcdController {
 public:
@@ -42,6 +45,7 @@ private:
     void drawPageTwo() const;
     void drawPageThree() const;
     void drawActionFeedbackPage() const;
+    time_t convertGpsTime();
 
     // Formats decimal degrees into a DMS string (DDD° MM' SS.S")
     // If isLatitude==true, appends N or S; otherwise appends E or W.
@@ -53,6 +57,8 @@ private:
     LcdMode lcdMode_                   = INFO;
     unsigned long actionModeEndMillis_ = 0;
     String actionFeedback_             = "";
+
+    TimeZoneInfo timeZoneInfo_;
 };
 
 #endif //GPSDO_V1_0_LCDCONTROLLER_H
