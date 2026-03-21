@@ -1,5 +1,5 @@
-#ifndef GPSDO_V1_0_LCDCONTROLLER_H
-#define GPSDO_V1_0_LCDCONTROLLER_H
+#ifndef LCDCONTROLLER_H
+#define LCDCONTROLLER_H
 
 // ReSharper disable CppUnusedIncludeDirective
 #include <Arduino.h>
@@ -25,7 +25,7 @@ public:
     int pageCount() const { return pageCount_; }
 
     void update(int page, OpMode opMode);
-    void giveActionFeedback(const String& actionFeedback);
+    void giveActionFeedback(const char* actionFeedback);
 
 private:
     enum LcdMode {
@@ -56,9 +56,11 @@ private:
     unsigned long lastUpdateMillis_    = 0;
     LcdMode lcdMode_                   = INFO;
     unsigned long actionModeEndMillis_ = 0;
-    String actionFeedback_             = "";
+    char actionFeedback_[21]           = {};
 
     TimeZoneInfo timeZoneInfo_;
+    time_t cachedLocalTime_   = 0;
+    int32_t lastUtcTimestamp_ = 0; // last UTC value for which cachedLocalTime_ was computed
 };
 
-#endif //GPSDO_V1_0_LCDCONTROLLER_H
+#endif //LCDCONTROLLER_H

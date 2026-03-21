@@ -197,12 +197,12 @@ void processInputs() {
 
     if (buttonA.wasPressed()) {
         manuallySaveState();
-        lcdController.giveActionFeedback(F("State manually saved"));
+        lcdController.giveActionFeedback("State manually saved");
     }
 
     if (buttonB.wasPressed()) {
         invalidateEEPROM();
-        lcdController.giveActionFeedback(F(" EEPROM invalidated"));
+        lcdController.giveActionFeedback(" EEPROM invalidated");
     }
 }
 

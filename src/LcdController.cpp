@@ -228,9 +228,9 @@ void LcdController::drawActionFeedbackPage() const {
     lcd_.print(actionFeedback_);
 }
 
-void LcdController::giveActionFeedback(const String& actionFeedback) {
-    lcdMode_             = ACTION;
-    actionFeedback_      = actionFeedback;
+void LcdController::giveActionFeedback(const char* actionFeedback) {
+    lcdMode_ = ACTION;
+    snprintf(actionFeedback_, sizeof(actionFeedback_), "%s", actionFeedback);
     actionModeEndMillis_ = millis() + 2000;
 }
 
@@ -253,5 +253,11 @@ time_t LcdController::convertGpsTime() {
         return 0; // mktime failed
     }
 
-    return static_cast<time_t>(timeZoneInfo_.utc2local(static_cast<int32_t>(utcTime)));
+    const auto utcTimestamp = static_cast<int32_t>(utcTime);
+    if (utcTimestamp != lastUtcTimestamp_) {
+        lastUtcTimestamp_ = utcTimestamp;
+        cachedLocalTime_  = static_cast<time_t>(timeZoneInfo_.utc2local(utcTimestamp));
+    }
+
+    return cachedLocalTime_;
 }

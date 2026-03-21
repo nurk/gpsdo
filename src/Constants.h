@@ -1,5 +1,5 @@
-#ifndef GPSDO_V1_0_CONSTANTS_H
-#define GPSDO_V1_0_CONSTANTS_H
+#ifndef CONSTANTS_H
+#define CONSTANTS_H
 
 // ReSharper disable once CppUnusedIncludeDirective
 #include <Arduino.h>
@@ -177,4 +177,4 @@ using ReadTempFn          = float(*)();
 using ReadOCXOTempFn      = float(*)();
 using SaveStateFn         = void(*)(const EEPROMState& eepromState);
 using ManuallySaveStateFn = void(*)();
-#endif //GPSDO_V1_0_CONSTANTS_H
+#endif //CONSTANTS_H
