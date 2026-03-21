@@ -56,6 +56,7 @@ Button buttonA(BUTTON_A);
 Button buttonB(BUTTON_B);
 Button rotaryButton(ROTARY_PUSH);
 unsigned long buttonAPressMillis = 0;
+unsigned long buttonBPressMillis = 0;
 
 RotaryEncoder encoder(ROTARY_A, ROTARY_B, RotaryEncoder::LatchMode::FOUR3);
 int encoderPosition = 0;
@@ -256,8 +257,14 @@ void processInputs() {
         }
     }
 
+    if (buttonB.wasPressed()) {
+        buttonBPressMillis = millis();
+    }
     if (buttonB.wasReleased()) {
-        reset();
+        if (millis() - buttonBPressMillis >= 1000) {
+            Serial2.println(F("System reset requested by Button B"));
+            reset();
+        }
     }
 }
 
