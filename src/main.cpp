@@ -55,8 +55,6 @@ I2C_eeprom eeprom(0x50, I2C_DEVICESIZE_24LC128); // NOLINT(*-interfaces-global-i
 Button buttonA(BUTTON_A);
 Button buttonB(BUTTON_B);
 Button rotaryButton(ROTARY_PUSH);
-unsigned long buttonAPressMillis = 0;
-unsigned long buttonBPressMillis = 0;
 
 RotaryEncoder encoder(ROTARY_A, ROTARY_B, RotaryEncoder::LatchMode::FOUR3);
 int encoderPosition = 0;
@@ -137,6 +135,7 @@ void saveState(const EEPROMState& eepromState) {
 void manuallySaveState() {
     manualSaveRequested = true;
 }
+
 // END CALLBACKS
 
 void doCalculation() {
@@ -208,15 +207,6 @@ void resetGPS() {
     initGps();
 }
 
-void reset() {
-    Serial2.println(F("System reset requested"));
-    wdt_disable();
-    wdt_enable(WDTO_15MS);
-    // ReSharper disable once CppDFAEndlessLoop
-    while (true) {
-    }
-}
-
 void invalidateEEPROM() {
     externalEepromController.invalidate();
     Serial2.println(F("EEPROM state invalidated — next boot will be a cold start with default values"));
@@ -226,7 +216,6 @@ void processInputs() {
     rotaryButton.read();
     buttonA.read();
     buttonB.read();
-    encoder.tick();
 
     const int newEncoderPosition = encoder.getPosition(); // NOLINT(*-narrowing-conversions)
     if (encoderPosition != newEncoderPosition) {
@@ -237,26 +226,13 @@ void processInputs() {
     encoderPosition = newEncoderPosition;
 
     if (buttonA.wasPressed()) {
-        buttonAPressMillis = millis();
-    }
-    if (buttonA.wasReleased()) {
-        if (millis() - buttonAPressMillis >= 1000) {
-            invalidateEEPROM();
-            lcdController.giveActionFeedback(F(" EEPROM invalidated"));
-        } else {
-            manuallySaveState();
-            lcdController.giveActionFeedback(F("State manually saved"));
-        }
+        manuallySaveState();
+        lcdController.giveActionFeedback(F("State manually saved"));
     }
 
     if (buttonB.wasPressed()) {
-        buttonBPressMillis = millis();
-    }
-    if (buttonB.wasReleased()) {
-        if (millis() - buttonBPressMillis >= 1000) {
-            Serial2.println(F("System reset requested by Button B"));
-            reset();
-        }
+        invalidateEEPROM();
+        lcdController.giveActionFeedback(F(" EEPROM invalidated"));
     }
 }
 
