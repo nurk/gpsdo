@@ -31,7 +31,6 @@
 #include <CalculationController.h>
 #include <Constants.h>
 #include <LcdController.h>
-#include <avr/wdt.h>
 #include <I2C_eeprom.h>
 #include <ExternalEEPROMController.h>
 
@@ -67,10 +66,6 @@ Generic_LM75_11Bit temperatureOCXO(0x49);
 
 DAC8571 dac(0x4C); // NOLINT(*-interfaces-global-init)
 
-// GPS watchdog: track last byte received and last reset time
-unsigned long lastGpsReceiveMillis                  = 0;
-unsigned long lastGpsResetMillis                    = 0;
-static constexpr unsigned long GPS_RESET_TIMEOUT_MS = 600000UL; // 600 seconds
 TinyGPSPlus gps;
 
 uint16_t warmupTime = WARMUP_TIME_DEFAULT; // seconds
@@ -182,31 +177,6 @@ void encoderTick() {
     encoder.tick();
 }
 
-void initGps() {
-    Serial2.println(F("Initializing GPS module with custom configuration..."));
-    delay(500);
-
-    // Disable GSV (Satellite list)
-    Serial1.println("$PUBX,40,GSV,0,0,0,0,0,0*59");
-    // Disable GSA (DOP/Active Satellites)
-    Serial1.println("$PUBX,40,GSA,0,0,0,0,0,0*4E");
-    // Disable VTG (Track/Speed)
-    Serial1.println("$PUBX,40,VTG,0,0,0,0,0,0*5E");
-    // Disable GLL (Geographic Position)
-    Serial1.println("$PUBX,40,GLL,0,0,0,0,0,0*5C");
-
-    Serial1.flush();
-
-    Serial2.println(F("GPS initialized with custom configuration"));
-}
-
-void resetGPS() {
-    digitalWriteFast(RESET_GPS, HIGH);
-    delay(50);
-    digitalWriteFast(RESET_GPS, LOW);
-    initGps();
-}
-
 void invalidateEEPROM() {
     externalEepromController.invalidate();
     Serial2.println(F("EEPROM state invalidated — next boot will be a cold start with default values"));
@@ -267,7 +237,6 @@ void processGps() {
     while (Serial1.available() > 0) {
         const int c = Serial1.read();
         gps.encode(static_cast<char>(c));
-        lastGpsReceiveMillis = millis();
     }
     if (gps.location.isValid() && gps.location.isUpdated()) {
 #ifdef DEBUG_GPS
@@ -322,14 +291,6 @@ void processGps() {
         lcdController.gpsData().centisecond = gps.time.centisecond();
         lcdController.gpsData().isTimeValid = true;
     }
-
-    // GPS watchdog: reset if no data received within timeout
-    if (lastGpsReceiveMillis != 0 && (millis() - lastGpsReceiveMillis > GPS_RESET_TIMEOUT_MS) &&
-        (millis() - lastGpsResetMillis > GPS_RESET_TIMEOUT_MS)) {
-        Serial2.println(F("GPS watchdog: resetting GPS due to timeout"));
-        resetGPS();
-        lastGpsResetMillis = millis();
-    }
 }
 
 void initPinsAndLeds() {
@@ -352,6 +313,24 @@ void initPinsAndLeds() {
     pinMode(TIC, INPUT);
     pinMode(PPS_IN, INPUT);
     pinMode(OCXO_IN, INPUT);
+}
+
+void initGps() {
+    Serial2.println(F("Initializing GPS module with custom configuration..."));
+    delay(500);
+
+    // Disable GSV (Satellite list)
+    Serial1.println("$PUBX,40,GSV,0,0,0,0,0,0*59");
+    // Disable GSA (DOP/Active Satellites)
+    Serial1.println("$PUBX,40,GSA,0,0,0,0,0,0*4E");
+    // Disable VTG (Track/Speed)
+    Serial1.println("$PUBX,40,VTG,0,0,0,0,0,0*5E");
+    // Disable GLL (Geographic Position)
+    Serial1.println("$PUBX,40,GLL,0,0,0,0,0,0*5C");
+
+    Serial1.flush();
+
+    Serial2.println(F("GPS initialized with custom configuration"));
 }
 
 void initI2CDevices() {
@@ -443,24 +422,7 @@ void initEventsAndTimers() {
     sei(); // Enable global interrupts
 }
 
-void setup() {
-    Serial2.begin(115200);
-
-    initPinsAndLeds();
-
-    Serial1.begin(9600);
-
-    initI2CDevices();
-    initUserInputs();
-    initEventsAndTimers();
-
-    initGps();
-
-    RSTCTRL.RSTFR |= RSTCTRL_WDRF_bm;
-    wdt_enable(WDT_PERIOD_8KCLK_gc);
-
-    warmupEndMillis = millis() + warmupTime * 1000UL;
-
+void initEEPROM() {
     externalEepromController.begin();
     const EEPROMState eepromState = externalEepromController.loadState();
     calculationController.setEEPROMState(eepromState);
@@ -475,6 +437,23 @@ void setup() {
         Serial2.print(F(", iAccumulator="));
         Serial2.println(eepromState.iAccumulator, 4);
     }
+}
+
+void setup() {
+    Serial2.begin(115200);
+
+    initPinsAndLeds();
+
+    Serial1.begin(9600);
+
+    initI2CDevices();
+    initUserInputs();
+    initEventsAndTimers();
+    initGps();
+
+    warmupEndMillis = millis() + warmupTime * 1000UL;
+
+    initEEPROM();
 }
 
 void loop() {
@@ -524,6 +503,4 @@ void loop() {
             manualSaveRequested  = false;
         }
     }
-
-    wdt_reset();
 }
