@@ -20,9 +20,7 @@ void LcdController::update(const int page, const OpMode opMode) {
         currentPage_ = page;
 
         if (lcdMode_ == ACTION) {
-            lcd_.clear();
-            lcd_.setCursor(0, 0);
-            lcd_.print(actionFeedback_);
+            drawActionFeedbackPage();
         } else {
             switch (currentPage_) {
                 case 0:

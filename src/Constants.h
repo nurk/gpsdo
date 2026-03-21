@@ -177,5 +177,4 @@ using ReadTempFn          = float(*)();
 using ReadOCXOTempFn      = float(*)();
 using SaveStateFn         = void(*)(const EEPROMState& eepromState);
 using ManuallySaveStateFn = void(*)();
-using SetOpModeFn         = void(*)(OpMode mode, int32_t holdValue);
 #endif //GPSDO_V1_0_CONSTANTS_H

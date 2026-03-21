@@ -15,8 +15,6 @@ static constexpr uint16_t kStoredPayloadSize  = kIAccumulatorOffset + sizeof(dou
 static_assert(kStoredPayloadSize == sizeof(uint16_t) + sizeof(double),
               "kStoredPayloadSize does not match kPayloadSize definition in header");
 
-static uint8_t g_payloadBuf[kStoredPayloadSize];
-
 uint32_t ExternalEEPROMController::bankAddr(const uint8_t bank) const noexcept { // NOLINT(*-convert-member-functions-to-static)
     return kEepromBaseAddr + static_cast<uint32_t>(bank) * kBankSize;
 }
@@ -65,6 +63,7 @@ void ExternalEEPROMController::begin() {
 }
 
 EEPROMState ExternalEEPROMController::loadState() const {
+    uint8_t g_payloadBuf[kStoredPayloadSize];
     EEPROMState eepromState = DEFAULT_EEPROM_STATE;
     if (!isValid_) return eepromState; // cold start — return defaults
 
@@ -82,7 +81,7 @@ void ExternalEEPROMController::saveState(const EEPROMState& eepromState) {
 #ifdef DEBUG
     Serial2.println(F("Saving controller state to EEPROM started"));
 #endif
-
+    uint8_t g_payloadBuf[kStoredPayloadSize];
     // Serialise fields explicitly — never write isValid to EEPROM.
     memcpy(g_payloadBuf + kDacValueOffset, &eepromState.dacValue, sizeof(uint16_t));
     memcpy(g_payloadBuf + kIAccumulatorOffset, &eepromState.iAccumulator, sizeof(double));

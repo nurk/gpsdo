@@ -14,6 +14,4 @@ void saveState(const EEPROMState& eepromState);
 
 void manuallySaveState();
 
-void setOpMode(OpMode mode, int32_t holdValue);
-
 #endif // CALLBACKS_H

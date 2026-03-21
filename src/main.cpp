@@ -137,14 +137,6 @@ void saveState(const EEPROMState& eepromState) {
 void manuallySaveState() {
     manualSaveRequested = true;
 }
-
-void setOpMode(const OpMode mode, const int32_t holdValue) {
-    if (holdValue > 0 && holdValue <= DAC_MAX_VALUE) {
-        calculationController.state().holdValue = holdValue;
-    }
-    opMode = mode;
-}
-
 // END CALLBACKS
 
 void doCalculation() {
