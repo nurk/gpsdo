@@ -104,7 +104,7 @@ struct ControlState {
     // When a coarse trim fires to pull the accumulator away from a rail, the I-term
     // is suppressed for coarseTrimPeriod ticks so the trim has a full period to work
     // uncontested before the I-term can drain it back.  Counts down each tick.
-    int32_t iTermSuppressCount    = 0;
+    int32_t iTermSuppressCount = 0;
 
     // --- PPS Locked ---
     bool ppsLocked       = false;
@@ -172,12 +172,10 @@ constexpr double PTERM_MAX_COUNTS = 2000.0;
 constexpr int32_t COARSE_ERROR_SANITY_LIMIT = 50;
 
 
-using SetWarmupTimeFn     = void(*)(uint16_t seconds);
 using SetDacFn            = void(*)(uint16_t value);
 using ReadTempFn          = float(*)();
 using ReadOCXOTempFn      = float(*)();
 using SaveStateFn         = void(*)(const EEPROMState& eepromState);
 using ManuallySaveStateFn = void(*)();
-using SetTCA0CountFn      = void(*)(uint16_t count);
 using SetOpModeFn         = void(*)(OpMode mode, int32_t holdValue);
 #endif //GPSDO_V1_0_CONSTANTS_H

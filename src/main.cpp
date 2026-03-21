@@ -55,6 +55,7 @@ I2C_eeprom eeprom(0x50, I2C_DEVICESIZE_24LC128); // NOLINT(*-interfaces-global-i
 Button buttonA(BUTTON_A);
 Button buttonB(BUTTON_B);
 Button rotaryButton(ROTARY_PUSH);
+unsigned long buttonAPressMillis = 0;
 
 RotaryEncoder encoder(ROTARY_A, ROTARY_B, RotaryEncoder::LatchMode::FOUR3);
 int encoderPosition = 0;
@@ -79,8 +80,7 @@ unsigned long warmupEndMillis;
 CalculationController calculationController(setDacValue,
                                             readTemperatureC,
                                             readOCXOTemperatureC,
-                                            saveState,
-                                            setTCA0Count);
+                                            saveState);
 LcdController lcdController(lcd,
                             calculationController,
                             readTemperatureC,
@@ -102,6 +102,25 @@ bool ppsError = true;
 bool manualSaveRequested           = false;
 unsigned long lastManualSaveMillis = 0;
 
+
+// BEGIN CALLBACKS
+void setDacValue(const uint16_t value) {
+    if (value <= DAC_MAX_VALUE) {
+        dac.write(value);
+    } else {
+        Serial2.print(F("Error: DAC value out of range: "));
+        Serial2.println(value);
+    }
+}
+
+float readTemperatureC() {
+    return temperature.readTemperatureC();
+}
+
+float readOCXOTemperatureC() {
+    return temperatureOCXO.readTemperatureC();
+}
+
 void saveState(const EEPROMState& eepromState) {
 #ifdef DEBUG_SAVE
     Serial2.print(F("Saving controller state to EEPROM:"));
@@ -118,6 +137,15 @@ void manuallySaveState() {
     manualSaveRequested = true;
 }
 
+void setOpMode(const OpMode mode, const int32_t holdValue) {
+    if (holdValue > 0 && holdValue <= DAC_MAX_VALUE) {
+        calculationController.state().holdValue = holdValue;
+    }
+    opMode = mode;
+}
+
+// END CALLBACKS
+
 void doCalculation() {
     // Snapshot ISR-shared variables atomically
     int32_t localTimerCounter       = 0;
@@ -133,6 +161,7 @@ void doCalculation() {
     calculationController.calculate(localTimerCounter, localTicValue, localLastOverflow, opMode);
 }
 
+// BEGIN ISR'S
 // Overflow interrupt for TCA0 - counts the 5 MHz signal derived from the 10 MHz OCXO (divided by 2)
 ISR(TCA0_OVF_vect) {
     overflowCount++;
@@ -155,39 +184,7 @@ ISR(ADC0_RESRDY_vect) {
     ADC0.INTFLAGS = ADC_RESRDY_bm; // Clear the interrupt flag
 }
 
-void setTCA0Count(const uint16_t count) {
-    TCA0.SINGLE.CNT = count;
-}
-
-void setWarmupTime(const uint16_t seconds) {
-    warmupTime      = seconds;
-    warmupEndMillis = seconds * 1000;
-}
-
-void setDacValue(const uint16_t value) {
-    if (value <= DAC_MAX_VALUE) {
-        dac.write(value);
-    } else {
-        Serial2.print(F("Error: DAC value out of range: "));
-        Serial2.println(value);
-    }
-}
-
-float readTemperatureC() {
-    return temperature.readTemperatureC();
-}
-
-float readOCXOTemperatureC() {
-    return temperatureOCXO.readTemperatureC();
-}
-
-void setOpMode(const OpMode mode, const int32_t holdValue) {
-    if (holdValue > 0 && holdValue <= DAC_MAX_VALUE) {
-        calculationController.state().holdValue = holdValue;
-    }
-    opMode = mode;
-    lcdController.setOpMode(opMode);
-}
+// END ISR'S
 
 void encoderTick() {
     encoder.tick();
@@ -196,9 +193,6 @@ void encoderTick() {
 void initGps() {
     Serial2.println(F("Initializing GPS module with custom configuration..."));
     delay(500);
-
-    // I think this is looping for a long time giving the impression it hangs
-    //while (Serial1.available()) Serial1.read();
 
     // Disable GSV (Satellite list)
     Serial1.println("$PUBX,40,GSV,0,0,0,0,0,0*59");
@@ -221,6 +215,20 @@ void resetGPS() {
     initGps();
 }
 
+void reset() {
+    Serial2.println(F("System reset requested"));
+    wdt_disable();
+    wdt_enable(WDTO_15MS);
+    // ReSharper disable once CppDFAEndlessLoop
+    while (true) {
+    }
+}
+
+void invalidateEEPROM() {
+    externalEepromController.invalidate();
+    Serial2.println(F("EEPROM state invalidated — next boot will be a cold start with default values"));
+}
+
 void processInputs() {
     rotaryButton.read();
     buttonA.read();
@@ -231,9 +239,122 @@ void processInputs() {
     if (encoderPosition != newEncoderPosition) {
         const int diff = newEncoderPosition - encoderPosition;
         lcdPage        = (lcdPage + diff + lcdController.pageCount()) % lcdController.pageCount();
-        lcdController.update(lcdPage);
+        lcdController.update(lcdPage, opMode);
     }
     encoderPosition = newEncoderPosition;
+
+    if (buttonA.wasPressed()) {
+        buttonAPressMillis = millis();
+    }
+    if (buttonA.wasReleased()) {
+        if (millis() - buttonAPressMillis >= 1000) {
+            invalidateEEPROM();
+            lcdController.giveActionFeedback(F(" EEPROM invalidated"));
+        } else {
+            manuallySaveState();
+            lcdController.giveActionFeedback(F("State manually saved"));
+        }
+    }
+
+    if (buttonB.wasReleased()) {
+        reset();
+    }
+}
+
+void processCommands() {
+    // todo temp just for setting dac value
+    // create a commandProcessor if this is going to be a thing
+    if (Serial2.available() > 0) {
+        const int read = Serial2.read();
+        if (read == 'd') {
+            const uint16_t dacValue = Serial2.parseInt();
+            const float dacVoltage  = static_cast<float>(dacValue) / DAC_MAX_VALUE * DAC_VREF;
+            Serial2.print(F("Setting DAC value: "));
+            Serial2.print(dacValue);
+            Serial2.print(F(", Voltage: "));
+            Serial2.print(dacVoltage, 4);
+            setDacValue(dacValue);
+            calculationController.state().dacValue   = dacValue;
+            calculationController.state().dacVoltage = dacVoltage;
+        } else if (read == 'i') {
+            invalidateEEPROM();
+        } else if (read == 's') {
+            manuallySaveState();
+        }
+
+        while (Serial2.available() > 0) {
+            Serial2.read(); // flush rest of line
+        }
+    }
+}
+
+void processGps() {
+    while (Serial1.available() > 0) {
+        const int c = Serial1.read();
+        gps.encode(static_cast<char>(c));
+        lastGpsReceiveMillis = millis();
+    }
+    if (gps.location.isValid() && gps.location.isUpdated()) {
+#ifdef DEBUG_GPS
+        Serial2.print(F("GPS position updated: "));
+        Serial2.print(gps.location.lat(), 6);
+        Serial2.print(F(", "));
+        Serial2.println(gps.location.lng(), 6);
+#endif
+        lcdController.gpsData().latitude        = gps.location.lat();
+        lcdController.gpsData().longitude       = gps.location.lng();
+        lcdController.gpsData().isPositionValid = true;
+    }
+
+    if (gps.satellites.isValid() && gps.satellites.isUpdated()) {
+#ifdef DEBUG_GPS
+        Serial2.print(F("GPS satellites updated: "));
+        Serial2.println(gps.satellites.value());
+#endif
+        lcdController.gpsData().satellites        = gps.satellites.value();
+        lcdController.gpsData().isSatellitesValid = true;
+    }
+
+    if (gps.date.isValid() && gps.date.isUpdated()) {
+#ifdef DEBUG_GPS
+        Serial2.print(F("GPS date updated: "));
+        Serial2.print(gps.date.year());
+        Serial2.print(F("-"));
+        Serial2.print(gps.date.month());
+        Serial2.print(F("-"));
+        Serial2.println(gps.date.day());
+#endif
+        lcdController.gpsData().year        = gps.date.year();
+        lcdController.gpsData().month       = gps.date.month();
+        lcdController.gpsData().day         = gps.date.day();
+        lcdController.gpsData().isDateValid = true;
+    }
+
+    if (gps.time.isValid() && gps.time.isUpdated()) {
+#ifdef DEBUG_GPS
+        Serial2.print(F("GPS time updated: "));
+        Serial2.print(gps.time.hour());
+        Serial2.print(F(":"));
+        Serial2.print(gps.time.minute());
+        Serial2.print(F(":"));
+        Serial2.print(gps.time.second());
+        Serial2.print(F("."));
+        Serial2.println(gps.time.centisecond());
+#endif
+        lcdController.gpsData().hour        = gps.time.hour();
+        lcdController.gpsData().minute      = gps.time.minute();
+        lcdController.gpsData().second      = gps.time.second();
+        lcdController.gpsData().centisecond = gps.time.centisecond();
+        lcdController.gpsData().isTimeValid = true;
+    }
+
+    // GPS watchdog: reset if no data received within timeout
+    if (lastGpsReceiveMillis != 0 && (millis() - lastGpsReceiveMillis > GPS_RESET_TIMEOUT_MS) &&
+        (millis() - lastGpsResetMillis > GPS_RESET_TIMEOUT_MS)) {
+        Serial2.println(F("GPS watchdog: resetting GPS due to timeout"));
+        resetGPS();
+        lastGpsResetMillis = millis();
+    }
 }
 
 void initPinsAndLeds() {
@@ -381,106 +502,8 @@ void setup() {
     }
 }
 
-void processGps() {
-    while (Serial1.available() > 0) {
-        const int c = Serial1.read();
-        gps.encode(static_cast<char>(c));
-        lastGpsReceiveMillis = millis();
-    }
-    if (gps.location.isValid() && gps.location.isUpdated()) {
-#ifdef DEBUG_GPS
-        Serial2.print(F("GPS position updated: "));
-        Serial2.print(gps.location.lat(), 6);
-        Serial2.print(F(", "));
-        Serial2.println(gps.location.lng(), 6);
-#endif
-        lcdController.gpsData().latitude        = gps.location.lat();
-        lcdController.gpsData().longitude       = gps.location.lng();
-        lcdController.gpsData().isPositionValid = true;
-    }
-
-    if (gps.satellites.isValid() && gps.satellites.isUpdated()) {
-#ifdef DEBUG_GPS
-        Serial2.print(F("GPS satellites updated: "));
-        Serial2.println(gps.satellites.value());
-#endif
-        lcdController.gpsData().satellites        = gps.satellites.value();
-        lcdController.gpsData().isSatellitesValid = true;
-    }
-
-    if (gps.date.isValid() && gps.date.isUpdated()) {
-#ifdef DEBUG_GPS
-        Serial2.print(F("GPS date updated: "));
-        Serial2.print(gps.date.year());
-        Serial2.print(F("-"));
-        Serial2.print(gps.date.month());
-        Serial2.print(F("-"));
-        Serial2.println(gps.date.day());
-#endif
-        lcdController.gpsData().year        = gps.date.year();
-        lcdController.gpsData().month       = gps.date.month();
-        lcdController.gpsData().day         = gps.date.day();
-        lcdController.gpsData().isDateValid = true;
-    }
-
-    if (gps.time.isValid() && gps.time.isUpdated()) {
-#ifdef DEBUG_GPS
-        Serial2.print(F("GPS time updated: "));
-        Serial2.print(gps.time.hour());
-        Serial2.print(F(":"));
-        Serial2.print(gps.time.minute());
-        Serial2.print(F(":"));
-        Serial2.print(gps.time.second());
-        Serial2.print(F("."));
-        Serial2.println(gps.time.centisecond());
-#endif
-        lcdController.gpsData().hour        = gps.time.hour();
-        lcdController.gpsData().minute      = gps.time.minute();
-        lcdController.gpsData().second      = gps.time.second();
-        lcdController.gpsData().centisecond = gps.time.centisecond();
-        lcdController.gpsData().isTimeValid = true;
-    }
-
-    // GPS watchdog: reset if no data received within timeout
-    if (lastGpsReceiveMillis != 0 && (millis() - lastGpsReceiveMillis > GPS_RESET_TIMEOUT_MS) &&
-        (millis() - lastGpsResetMillis > GPS_RESET_TIMEOUT_MS)) {
-        Serial2.println(F("GPS watchdog: resetting GPS due to timeout"));
-        resetGPS();
-        lastGpsResetMillis = millis();
-    }
-}
-
-void processCommands() {
-    // todo temp just for setting dac value
-    // create a commandProcessor if this is going to be a thing
-    if (Serial2.available() > 0) {
-        const int read = Serial2.read();
-        if (read == 'd') {
-            const uint16_t dacValue = Serial2.parseInt();
-            const float dacVoltage  = static_cast<float>(dacValue) / DAC_MAX_VALUE * DAC_VREF;
-            Serial2.print(F("Setting DAC value: "));
-            Serial2.print(dacValue);
-            Serial2.print(F(", Voltage: "));
-            Serial2.print(dacVoltage, 4);
-            setDacValue(dacValue);
-            calculationController.state().dacValue   = dacValue;
-            calculationController.state().dacVoltage = dacVoltage;
-        } else if (read == 'i') {
-            externalEepromController.invalidate();
-            Serial2.println(F("EEPROM state invalidated — next boot will be a cold start with default values"));
-        } else if (read == 's') {
-            manuallySaveState();
-        }
-
-        while (Serial2.available() > 0) {
-            Serial2.read(); // flush rest of line
-        }
-    }
-}
-
 void loop() {
-    lcdController.setOpMode(opMode);
-    lcdController.update(lcdPage);
+    lcdController.update(lcdPage, opMode);
     processGps();
     processInputs();
     processCommands();

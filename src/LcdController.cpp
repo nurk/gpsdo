@@ -1,7 +1,6 @@
 #include <LcdController.h>
 
 #include <CalculationController.h>
-#include <math.h> // NOLINT(*-deprecated-headers)
 
 LcdController::LcdController(hd44780_I2Cexp& lcd,
                              CalculationController& calculationController,
@@ -13,26 +12,35 @@ LcdController::LcdController(hd44780_I2Cexp& lcd,
       readOCXOTempFn(readOCXOTempFn) {
 }
 
-void LcdController::update(const int page) {
+void LcdController::update(const int page, const OpMode opMode) {
     if (millis() > lastUpdateMillis_ + 215 || page != currentPage_) {
+        if (lcdMode_ == ACTION && millis() > actionModeEndMillis_) {
+            lcdMode_ = INFO;
+        }
         currentPage_ = page;
 
-        switch (currentPage_) {
-            case 0:
-                drawPageZero();
-                break;
-            case 1:
-                drawPageOne();
-                break;
-            case 2:
-                drawPageTwo();
-                break;
-            case 3:
-                drawPageThree();
-                break;
-            default:
-                drawPageZero();
-                break;
+        if (lcdMode_ == ACTION) {
+            lcd_.clear();
+            lcd_.setCursor(0, 0);
+            lcd_.print(actionFeedback_);
+        } else {
+            switch (currentPage_) {
+                case 0:
+                    drawPageZero();
+                    break;
+                case 1:
+                    drawPageOne(opMode);
+                    break;
+                case 2:
+                    drawPageTwo();
+                    break;
+                case 3:
+                    drawPageThree();
+                    break;
+                default:
+                    drawPageZero();
+                    break;
+            }
         }
 
         lastUpdateMillis_ = millis();
@@ -128,7 +136,7 @@ void LcdController::drawPageZero() const {
     lcd_.print(tempSatBuf);
 }
 
-void LcdController::drawPageOne() const {
+void LcdController::drawPageOne(const OpMode opMode) const {
     lcd_.clear();
     char line[21];
 
@@ -145,7 +153,7 @@ void LcdController::drawPageOne() const {
     // Row 2: "Mode: " (6) + mode string right-aligned in 14 = 20
     lcd_.setCursor(0, 2);
     const char* modeStr;
-    switch (opMode_) {
+    switch (opMode) {
         case WARMUP: modeStr = "Heating";
             break;
         case RUN: modeStr = "Run";
@@ -213,4 +221,16 @@ void LcdController::drawPageThree() const {
     lcd_.setCursor(0, 3);
     snprintf(line, sizeof(line), "Crs Acc:%12.3f", calculationController_.state().coarseErrorAccumulator);
     lcd_.print(line);
+}
+
+void LcdController::drawActionFeedbackPage() const {
+    lcd_.clear();
+    lcd_.setCursor(0, 1);
+    lcd_.print(actionFeedback_);
+}
+
+void LcdController::giveActionFeedback(const String& actionFeedback) {
+    lcdMode_             = ACTION;
+    actionFeedback_      = actionFeedback;
+    actionModeEndMillis_ = millis() + 2000;
 }

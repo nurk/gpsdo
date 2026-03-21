@@ -10,8 +10,7 @@ public:
     CalculationController(SetDacFn setDac,
                           ReadTempFn readTemp,
                           ReadOCXOTempFn readOCXOTemp,
-                          SaveStateFn saveState,
-                          SetTCA0CountFn setTCA0Count);
+                          SaveStateFn saveState);
 
     void calculate(int32_t localTimerCounter,
                    int32_t localTicValue,
@@ -31,7 +30,6 @@ private:
     ReadTempFn readTemp_;
     ReadOCXOTempFn readOCXOTemp_;
     SaveStateFn saveState_;
-    SetTCA0CountFn setTCA0Count_;
 
     void timeKeeping(unsigned long lastOverflow);
     void timerCounterNormalization(int32_t localTimerCounter, unsigned long lastOverflow);

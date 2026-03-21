@@ -4,13 +4,11 @@
 CalculationController::CalculationController(const SetDacFn setDac,
                                              const ReadTempFn readTemp,
                                              const ReadOCXOTempFn readOCXOTemp,
-                                             const SaveStateFn saveState,
-                                             const SetTCA0CountFn setTCA0Count)
+                                             const SaveStateFn saveState)
     : setDac_(setDac),
       readTemp_(readTemp),
       readOCXOTemp_(readOCXOTemp),
-      saveState_(saveState),
-      setTCA0Count_(setTCA0Count) {
+      saveState_(saveState) {
 }
 
 void CalculationController::calculate(const int32_t localTimerCounter,
@@ -101,9 +99,9 @@ void CalculationController::timerCounterNormalization(const int32_t localTimerCo
     // (a few counts of OCXO jitter).  Any magnitude > MODULO/2 means the
     // counter wrapped; correct it back into the [-MODULO/2 … +MODULO/2] range.
     if (timerCounterValueReal < -(MODULO / 2)) {
-        timerCounterValueReal += MODULO;   // counter wrapped downward (captured value jumped back near 0)
+        timerCounterValueReal += MODULO; // counter wrapped downward (captured value jumped back near 0)
     } else if (timerCounterValueReal > (MODULO / 2)) {
-        timerCounterValueReal -= MODULO;   // counter wrapped upward   (e.g. raw +49999 → corrected -1)
+        timerCounterValueReal -= MODULO; // counter wrapped upward   (e.g. raw +49999 → corrected -1)
     }
     state_.timerCounterValueReal = timerCounterValueReal;
     state_.timerCounterValueOld  = localTimerCounter;
@@ -267,10 +265,10 @@ void CalculationController::piLoop(const OpMode mode) {
     // NOTE: use explicit comparison rather than abs() — the Arduino abs() macro
     // operates on int (16-bit on AVR) and is unsafe for int32_t values.
     if (state_.timerCounterError >= -COARSE_ERROR_SANITY_LIMIT &&
-        state_.timerCounterError <=  COARSE_ERROR_SANITY_LIMIT) {
+        state_.timerCounterError <= COARSE_ERROR_SANITY_LIMIT) {
         state_.coarseErrorAccumulator += static_cast<double>(state_.timerCounterError);
     }
-    state_.lastCoarseTrim         = 0.0;
+    state_.lastCoarseTrim = 0.0;
 
     if (state_.time % state_.coarseTrimPeriod == 0) {
         const double coarseTrim       = state_.coarseErrorAccumulator * state_.coarseTrimGain;
@@ -280,7 +278,7 @@ void CalculationController::piLoop(const OpMode mode) {
         const bool coarseAtMax     = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
         const bool coarseDrivesMin = coarseTrim < 0.0;
         const bool coarseDrivesMax = coarseTrim > 0.0;
-        const bool trimAway = (coarseAtMin && coarseDrivesMax) || (coarseAtMax && coarseDrivesMin);
+        const bool trimAway        = (coarseAtMin && coarseDrivesMax) || (coarseAtMax && coarseDrivesMin);
 
         if (!((coarseAtMin && coarseDrivesMin) || (coarseAtMax && coarseDrivesMax))) {
             state_.iAccumulator += coarseTrim;
