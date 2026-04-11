@@ -61,6 +61,7 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `docs/tic-capacitor-selection.md` | TIC capacitor (C9) analysis — X7R problems, ECHU1H102GX5 (PPS film) recommendation, C0G alternative |
 | `docs/tic-diode-selection.md` | TIC diode (D2) analysis — D2 is in series **before** C9, forward-biased during charging. 1N5817 junction capacitance (~150 pF) causes charge-ramp non-linearity. 1N4148W (4 pF C_J) recommended — reduces TIC_MAX due to higher V_F (~0.47 V vs ~0.22 V), requires updating TIC_MAX + ticOffset after swap. Reverse leakage is irrelevant in this topology. |
 | `logs/` | Serial capture logs from real hardware runs |
+| `utils/fit_tic_poly.py` | TIC polynomial re-fitter — parses WARMUP ticks from a log, fits new x2/x3 using the exact Horner-form firmware model, compares current / refitted cubic / quadratic / zero options by step-variance metric. Run: `python3 utils/fit_tic_poly.py <logfile> [--plot]` |
 
 ---
 
@@ -77,9 +78,10 @@ GPS: Serial1 @ 9600 baud (u-blox, NMEA via TinyGPSPlus)
 | `TIC_MAX` | 1012.0 | Maximum valid raw TIC ADC count |
 | `WARMUP_TIME_DEFAULT` | 600 s | Default OCXO warm-up time |
 | `DAC_INITIAL_VALUE` | 22880 | Best-guess EFC starting point on cold boot (midpoint of run9/run10 settled values) |
-| `LOCK_THRESHOLD` | 50.0 | Lock declared when `abs(filtered)` stays below this for 2×ticFilterConst s |
-| `UNLOCK_THRESHOLD` | 100.0 | Lock lost immediately when `abs(filtered)` exceeds this (single tick) |
-| `PTERM_MAX_COUNTS` | 2000.0 | Maximum absolute DAC counts the P-term may contribute per tick |
+| `LOCK_THRESHOLD` | 80.0 | Lock declared when `abs(filtered)` stays below this for ticFilterConst consecutive s |
+| `UNLOCK_THRESHOLD` | 200.0 | Lock lost immediately when `abs(filtered)` exceeds this (single tick) |
+| `PTERM_MAX_COUNTS` | 2000.0 | Maximum absolute DAC counts the P-term may contribute per tick (non-wrap ticks only) |
+| `TIC_WRAP_THRESHOLD` | 400.0 | `\|ticDelta\|` above this is a TIC sawtooth wrap — P-term zeroed for that tick |
 
 ---
 
@@ -136,12 +138,21 @@ iTermSuppressCount          int32_t    — countdown: I-term is suppressed (step
 dacMinValue                 uint16_t   — lower DAC safety limit (default 0)
 dacMaxValue                 uint16_t   — upper DAC safety limit (default 65535)
 
-ppsLocked                   bool       — true when loop has been locked for ≥ 2×ticFilterConst consecutive seconds
+ppsLocked                   bool       — true when loop has been locked for ≥ ticFilterConst consecutive seconds
 ppsLockCount                int32_t    — consecutive seconds within LOCK_THRESHOLD; resets on any excursion
 
-ticOffset                   double     — expected mid-point of TIC range (default 500.0)
-x2Coefficient               double     — quadratic linearisation coeff (stored pre-scaled /1000; default 1.0e-4)
-x3Coefficient               double     — cubic linearisation coeff (stored pre-scaled /100000; default 3.0e-7)
+ticOffset                   double     — equilibrium TIC value; the loop drives TIC to this at lock.
+                                         **Must be set to the midpoint of the actual hardware TIC sawtooth range** to
+                                         remove the I-term's systematic pull-in bias during large frequency errors.
+                                         With C0G cap + 1N4148W diode, observed sawtooth spans TIC_MIN (~12) to
+                                         ~780–815 hardware counts → midpoint ~395–413. **Default 400.0**
+                                         (was 500.0, which assumed TIC_MAX=1012 — incorrect for this hardware).
+                                         Why it matters: when ticOffset ≠ sawtooth midpoint, the I-term has a
+                                         persistent DC bias equal to (sawtooth_mean − ticOffset) / ticFilterConst
+                                         per tick, which can drive the loop in the wrong direction during pull-in
+                                         from a warm-start seed that requires the DAC to move upward.
+x2Coefficient               double     — quadratic linearisation coeff (stored pre-scaled /1000; **default 0.0 for C0G cap, was 1.0e-4 for X7R**)
+x3Coefficient               double     — cubic linearisation coeff (stored pre-scaled /100000; **default 0.0 for C0G cap, was 3.0e-7 for X7R**)
 ```
 
 ---
@@ -219,10 +230,25 @@ calculate()
   │                                No ticFilterSeeded guard needed — ticPreFilter() always sets it first.
   ├── piLoop(mode)               — PI control; only active when mode == RUN
   │                                P-term = ticDelta * gain (NOT ticFrequencyError — coarse term caused GPS jitter noise)
-  │                                  Clamped to ±PTERM_MAX_COUNTS. Stored in state_.pTerm.
+  │                                  Wrap suppression: if |ticDelta| > TIC_WRAP_THRESHOLD (400), P-term is zeroed for
+  │                                  that tick. A TIC sawtooth wrap produces |ticDelta| ~700–800 in the wrong direction
+  │                                  (negative spike when OCXO slow, positive when fast) — opposite of the correct
+  │                                  correction. Zeroing for one tick is harmless; the I-term continues uninterrupted.
+  │                                  On non-wrap ticks, clamped to ±PTERM_MAX_COUNTS.
   │                                I-step = ticCorrectedNetValueFiltered * gain / damping / timeConst
   │                                  + iRemainder (fractional carry-forward)
   │                                iAccumulator updated with floor(iStep); remainder stored in iRemainder.
+  │                                Overshoot guard (conditional integration): if ticCorrectedNetValue and
+  │                                  ticCorrectedNetValueFiltered have opposite signs, the EMA filter is
+  │                                  lagging behind a zero-crossing of the raw phase error — the OCXO has
+  │                                  already crossed the setpoint but the filter memory still reflects the
+  │                                  old large error. In this case the I-step is skipped and iRemainder is
+  │                                  zeroed. This prevents the filter lag from driving the integrator past
+  │                                  the true setpoint (the overshoot seen in run2).
+  │                                  Guard uses TWO consecutive raw samples (current and previous tick):
+  │                                  both must be opposite to the filtered value to trigger. A single-tick
+  │                                  sign opposite fires every ~4 ticks on the normal sawtooth (proven to
+  │                                  block the I-term during pull-in — fixed 2026-04-10).
   │                                Anti-windup: I-step discarded (and iRemainder zeroed) if accumulator is
   │                                  already at a rail and step would push further into it.
   │                                iAccumulator clamped to [dacMinValue, dacMaxValue].
@@ -238,8 +264,8 @@ calculate()
   │                                dacOutput = iAccumulator + pTerm, clamped, written via setDac_()
   ├── lockDetection(mode)        — only active when mode == RUN
   │                                Counts consecutive seconds where abs(ticCorrectedNetValueFiltered) < LOCK_THRESHOLD (50)
-  │                                Declares lock after ppsLockCount ≥ 2 × ticFilterConst
-  │                                Declares unlock immediately when abs(filtered) > UNLOCK_THRESHOLD (100)
+  │                                Declares lock after ppsLockCount ≥ ticFilterConst (one full EMA time constant)
+  │                                Declares unlock immediately when abs(filtered) > UNLOCK_THRESHOLD (200)
   │                                Resets ppsLocked and ppsLockCount when leaving RUN mode
   │                                Drives LOCK_LED via ppsLocked (written in main loop)
   │                                No iDrift guard — phase condition alone is sufficient (see run7/run8 notes)
@@ -605,6 +631,130 @@ These are documented in detail in `docs/path-to-disciplined-ocxo.md`.
 - No lock drops across the full 6632-second run. ✅
 - `coarseErrorAccumulator` remained in the expected range (≤54 counts at end). ✅
 - No missed PPS events triggered (all gaps handled as multi-second PPS intervals). ✅
+
+### log 2026-04-10-run1.log
+- **Run T30–T2425 (2396 seconds total).** Mode transition WARMUP→RUN at T603. ✅
+- **Warm boot confirmed:** `iAccumulator` seeded at 22,699.5 from EEPROM. DAC started at 20,699 (last hardware DAC value from previous session). ✅
+- **LOCKED declared at T648** — only **45 seconds after entering RUN mode**. ✅ This is ~10× faster than cold-start runs (which typically lock around T1100–T1447). EEPROM warm-start seeding working as designed.
+- **Lock held continuously from T648 to T2425 (1777+ seconds). Zero unlock events.** ✅
+- `iAccumulator` at lock: 22,494 counts ≈ 1.718 V. Drifted slowly upward to ~23,580 (1.799 V) by T2425.
+- **Drift is thermally driven**: OCXO temp rose from 32.63 °C at T603 to 33.38 °C at T2425. OCXO had not reached thermal equilibrium; `iAccumulator` drift rate slowed from ~0.9 counts/tick (early) to ~0.10 counts/tick (T2425). Full convergence expected ~1000–2000 seconds beyond log end once thermal equilibrium is reached.
+- **Coarse trim working correctly:** First trim at T640 (`Coarse Trim = 18.0`), second at T704 (`Coarse Trim = 29.5`), subsequent trims every 64 s at ~19–30 counts each. No sanity guard trips. ✅
+- **Residual frequency error improved vs run9:** `timerCounterReal` distribution post-lock centred near −0.5 (vs −0.78 in run9). Implies ~50–60 ppb residual vs ~156 ppb in run9. Coarse trim successfully correcting residual frequency offset. ✅
+- TIC sawtooth still full-range (~0–810 counts) but period has lengthened to 8–9 ticks by end of log (vs 6–7 ticks in run9), consistent with the reduced residual frequency error.
+- `ticFrequencyError` on non-wrap ticks: ~100–170 counts early, declining to ~50–130 counts by T2000+. Trend toward zero as OCXO approaches on-frequency.
+- No GPS glitch events. No missed PPS events. ✅
+- **Summary: EEPROM warm-start + coarse trim combination has reduced lock time from ~800 s to ~45 s and residual frequency error from ~156 ppb to ~50–60 ppb.** Both features validated as working correctly.
+
+### TIC polynomial refit — C0G/NP0 capacitor for C9 (2026-04-10)
+- **C9 changed from X7R to C0G/NP0 1 nF** prior to the 2026-04-10-run1 session. C0G has near-zero voltage coefficient, eliminating the charge-ramp curvature that the original X7R polynomial was correcting.
+- `utils/fit_tic_poly.py` written and run against the run1 log. It implements the exact firmware Horner-form model:
+  `s = (tic - TIC_MIN)/(TIC_MAX - TIC_MIN)*1000;  linearized = s*(x1 + s*(x2 + s*x3))`
+  where `x1 = 1 - x2*1000 - x3*100000` (unity-gain constraint). Supports `--plot`.
+- **Refitted cubic from C0G log:** x2 ≈ 1.0e-4, x3 ≈ 3.0e-7 (identical to current defaults), RMS = 0.003 counts — the log just reflects what the firmware is already computing, not an independent hardware measurement.
+- **Step-variance metric unusable at cold-boot**: OCXO ~200 ppb off-frequency → TIC sawtooth wraps every 2–3 ticks → no extended ramp to measure non-linearity from.
+- **Cross-check on X7R run3 log**: "no correction" (x2=x3=0) gave step-std = 9.2 vs current polynomial = 24.0 → the old X7R polynomial was *worsening* linearity, suggesting it was fitted under different conditions and should not be trusted for the C0G.
+- **Action:** `x2Coefficient` and `x3Coefficient` set to **0.0** in `src/Constants.h` (C0G). Was 1.0e-4 / 3.0e-7 for X7R.
+  - With zero coefficients: `linearize(x) = (x - TIC_MIN)/(TIC_MAX - TIC_MIN)*1000` — linear scaling only.
+  - `ticValueCorrectionOffset = linearize(500) = 488.0`; loop still centres on zero automatically.
+- **To refit properly for C0G:** wait until the loop is locked and the sawtooth period ≥ 10 ticks, then run:
+  `python3 utils/fit_tic_poly.py <long-locked-log> [--plot]`
+
+### log 2026-04-10-run2.log
+- **Run T14–T1657 (1643 seconds total).** Mode transition WARMUP→RUN at T603. ✅
+- **Warm boot confirmed:** `iAccumulator` seeded at 23467.0, DAC Value 25467 (= 1.943 V) from EEPROM. ✅
+- **C0G zero-coefficient TIC linearisation confirmed working:**
+  - `TIC Correction Offset = 488.00` (= `linearize(500) = (500−12)/1000×1000 = 488`). ✅
+  - `TIC Correction = raw − 12` throughout. Linear scaling with no polynomial curvature. ✅
+- **LOCKED declared at T821** (~218 s into RUN mode). ✅
+- `iAccumulator` at lock: ~22391 counts ≈ 1.710 V. ✅
+- **Coarse trim working correctly:** first trim at T640 (+12.5 counts), subsequent trims every 64 s, all negative, growing in magnitude: 12.5 → 26 → 29 → 32 → 33.5 → 37 → 39 → 45 → 51.5 → 57.5 → 63 → 74.5 → 87.5 → 96 → 111 → 120.5 counts. ✅ (all < COARSE_ERROR_SANITY_LIMIT × coarseTrimGain in per-tick terms)
+- **Lock broken at T1251** — `iAccumulator` had drifted from ~22391 at T821 to ~20122 at T1251: ~2269 counts in 430 s ≈ **−5.3 counts/tick** average downward drift. ✅ (lock correctly broken; this is expected behaviour, not a bug)
+- **After T1251, loop continues to drift downward** throughout remainder of log:
+  - `iAccumulator` at T1657 (end of log): ~14907 counts ≈ 1.139 V. Still drifting at ~17 counts/tick.
+  - `timerCounterReal` consistently −3 to −5 from ~T1200 onward — OCXO running ~600–1000 ppb fast at the current EFC voltage, confirming the loop is far from the true setpoint.
+- **Root cause of persistent divergence — EFC setpoint has shifted dramatically lower since run1:**
+  - At run1 end (T2425), settled at ~23580 counts (1.799 V).
+  - This run's trajectory suggests true on-frequency setpoint is in the range **8000–12000 counts (0.6–0.9 V)**.
+  - This is ~11,000–15,000 counts lower than run1. The OCXO's EFC sensitivity at this ambient temperature produces a fundamentally different setpoint.
+  - **Most likely cause:** significant OCXO temperature increase between run1 and run2 — or the hardware environment has changed (e.g. enclosure, airflow, lab temperature). OCXO was 33.38–33.50 °C throughout (same as run1), but board/ambient may differ.
+- **Coarse trim is accelerating, not converging:** Because each trim pushes the DAC further downward and the OCXO's frequency error worsens (more negative `timerCounterReal`) as the EFC drops below the true setpoint, the per-trim correction grows with each period. The loop has not had enough time to pull the `iAccumulator` all the way down to the true setpoint.
+- **This is NOT a software bug.** The loop is behaving correctly:
+  - I-term and coarse trim are both pushing `iAccumulator` downward in response to the OCXO running fast.
+  - The issue is that the run was too short — at ~17 counts/tick drift rate near the end, the true setpoint is still ~8000–10000 counts away (~470–590 s of additional drift needed, plus convergence time).
+  - Given the I-term and coarse trim both active, true convergence requires ~2000–3000 additional seconds beyond T1657.
+- **No GPS glitch events, no missed PPS events.** ✅
+- **Sawtooth period** throughout RUN mode: 5–7 ticks (consistent with 150–200 ppb free-running offset from true setpoint). Did not compress, confirming the OCXO was never close to on-frequency at any DAC value visited in this run. ✅
+- **EEPROM save:** last saved `iAccumulator`/`dacValue` will be from the save cadence during RUN. On next warm boot, the seeded value will be much closer to the true setpoint and convergence will be faster. ✅
+- **Action for next run:** Let run for at least **3000–4000 seconds in RUN mode** (total ~4600–5200 s) to allow the loop to fully converge to the true setpoint at this OCXO temperature. Watch for `timerCounterReal` to centre on 0 and `ticFrequencyError` on non-wrap ticks to drop below 50 counts.
+- **Run extended to T2271.** `iAccumulator` continued falling: 14907 → 8690 (0.66 V) at end. Drift rate ~8 counts/tick at end. EEPROM last saved at T1803 with `iAccumulator = 12849` — that is the next warm-boot seed (much closer to the true setpoint than the original 23467).
+- **Overshoot identified and root cause confirmed:** The EMA filter (ticFilterConst=16) builds up 16 seconds of phase history during the long pull-in. When the OCXO crosses the true on-frequency EFC setpoint, `ticCorrectedNetValue` changes sign immediately but `ticCorrectedNetValueFiltered` takes ≥16 s to follow. During that lag the I-term continued integrating in the original direction — drilling the DAC ~3000+ counts past the setpoint before the filter caught up.
+- **Fix applied:** Conditional integration (overshoot guard) added to `piLoop()`. When `ticCorrectedNetValue` and `ticCorrectedNetValueFiltered` have **opposite signs**, the I-step is skipped and `iRemainder` is zeroed. The integrator resumes as soon as raw and filtered agree in sign again. This is equivalent to standard back-calculation anti-windup — the integrator freezes while the filter memory is stale. Has no effect on steady-state locked behaviour (raw and filtered virtually always share sign within ±50 counts of lock).
+- **Run terminated early** (near 0.66 V, heading toward DAC=0). Restart with the warm-boot seed of ~12849.
+
+### log 2026-04-11-run2.log
+- **Run T14–T4240 (4226 seconds total).** Mode transition WARMUP→RUN at T604. ✅
+- **Warm boot confirmed:** `iAccumulator` seeded at 22880.0, OCXO temp 30.75 °C. ✅
+- `iAccumulator` converged to **~25,440 counts (1.940 V)** mean in the T2000–T4000 region (stddev 61 counts). ✅
+- **`timerCounterReal` centred at 0** in settled region (T2000+): 1390 ticks at 0, 464 at −1, 227 at +1. OCXO is on-frequency. ✅
+- **Coarse trim working correctly:** correcting the residual offset over time; `timerCounterReal` centred much better than run1 (~−0.78 in run9 vs ~0 here). ✅
+- **No lock declared throughout the entire run** despite loop being on-frequency. ⚠️
+- **Root cause of no lock:** TIC sawtooth remained full-range (0–818 counts) throughout.
+  - TIC sawtooth wraps on GPS PPS jitter (±1–3 timer counter counts) even when OCXO is on-frequency.
+  - `ticCorrectedNetValueFiltered` oscillates ±80–170 counts at the sawtooth frequency (~6–7 ticks).
+  - `LOCK_THRESHOLD = 50` was too tight: the filter swing exceeds it on every sawtooth cycle.
+  - `UNLOCK_THRESHOLD = 100` was also too tight: sawtooth peaks brush it even after lock.
+  - Lock count hit 32 (at T635) and `ppsLocked` was briefly set, but `filtered` > 100 on sawtooth peaks caused immediate unlock. Lock was declared and broken every few ticks.
+- **Fix applied:** `LOCK_THRESHOLD` raised from **50 → 80**, `UNLOCK_THRESHOLD` raised from **100 → 200**.
+  - With a full-range sawtooth (0–818 counts, ticOffset 400), `filtered` oscillates roughly ±80–120 near the settled setpoint.
+  - 80-count lock threshold: lock can be declared during the lower half of each sawtooth swing.
+  - 200-count unlock threshold: sawtooth peaks (~170 counts) can no longer break lock.
+  - These values were validated against the run2 data — the loop would have locked and held with these thresholds.
+
+### ~~Step 5 — Lock detection~~ ✅ Done (validated in run8/run9/run2-apr11)
+- Added to `ControlState`: `ppsLocked` (bool), `lockCount` (int32_t).
+- Added to `Constants.h`: `LOCK_THRESHOLD` (80.0), `UNLOCK_THRESHOLD` (200.0).
+- Private method `lockDetection(OpMode mode)` implemented in `CalculationController`.
+- Resets `ppsLocked` / `lockCount` when mode is not `RUN`.
+- Requires `lockCount ≥ ticFilterConst` consecutive seconds below `LOCK_THRESHOLD` to declare lock.
+- Unlocks immediately when `abs(ticCorrectedNetValueFiltered) > UNLOCK_THRESHOLD`.
+- `LOCK_LED` is driven from `ppsLocked` in the main loop after each PPS event.
+- Threshold values tuned from run2-apr11 analysis: 80/200 (was 50/100).
+- Lock count requirement reduced from `2×ticFilterConst` to `ticFilterConst` (run3-apr11):
+  With a 42-tick sawtooth and filterConst=16, filtered stays below 80 for only ~25 ticks per
+  cycle. Requiring 32 consecutive ticks made lock structurally impossible. 16 consecutive ticks
+  (one full EMA time constant) is achievable in every sawtooth trough and is sufficient evidence
+  of convergence.
+
+### log 2026-04-11-run3.log
+- **Run T13–T1060 (short run, 457 RUN-mode ticks from T604).** Warm boot seeded from run2 EEPROM. ✅
+- `iAccumulator` stable at ~25,395–25,488 (mean ~25,440, consistent with run2). ✅
+- `timerCounterReal` centred at 0 (289 at 0, 87 at −1, 41 at +1). OCXO on-frequency. ✅
+- **No lock declared — max lockCount reached was 31 (one short of the old 32 requirement).** ⚠️
+- **Root cause:** TIC sawtooth period ~42 ticks, filterConst=16. Filtered signal swings −105 to +187.
+  Only ~59% of ticks have `|filtered| < 80`. The lock window (~25 consecutive ticks per cycle)
+  is shorter than the old 32-tick requirement. Every streak hit exactly 31 and was broken by the
+  next sawtooth peak at T916 (filtered=87.1).
+- **Fix applied:** lock count requirement changed from `2×ticFilterConst` (32) → `ticFilterConst` (16).
+  16 consecutive ticks within ±80 counts is achievable in every sawtooth trough once converged.
+- **Run T59–T997+ (WARMUP T59–T603, RUN from T603).** Warm boot: `iAccumulator` seeded at 22880, OCXO temp 21.87 °C (cold). ✅
+- **Loop diverged in RUN mode:** `iAccumulator` drifted consistently downward from 22880 at T604 to ~20461 at T997 at ~6–10 counts/tick net. OCXO temp rising slowly toward 30 °C. ⚠️
+- **Root cause — I-term structural sawtooth bias:**
+  - The TIC sawtooth on this hardware spans TIC_MIN (~12) to ~780–815 hardware counts — NOT to TIC_MAX (1012).
+  - Mean TIC during a sawtooth cycle ≈ (12 + 800) / 2 = 406. With `ticOffset = 500`, `ticValueCorrectionOffset = 488`.
+  - Mean `ticCorrectedNetValue` during sawtooth = (406−12) − 488 = **−94** — a permanent negative bias regardless of whether the OCXO is fast or slow.
+  - This bias produces I-steps of ≈ −94 × 12 / 3 / 32 ≈ **−11.75 counts/tick** downward — always, independent of true frequency error.
+  - When the OCXO is SLOW (needs DAC to go UP), the I-term still drives DOWN due to this bias, causing divergence.
+  - The coarse trim (positive, +14–43 counts per 64 s) is far too weak (~0.5 counts/tick) to overcome the −11.75 counts/tick I-term bias.
+  - Previous runs converging correctly were starting from 32767 (OCXO fast), so "drive DOWN" was the correct direction. The bug was always present but the direction happened to be right. Starting from 22880 with a cold (slow) OCXO exposes the failure mode.
+- **`timerCounterReal` = −1 to −6 (OCXO slow at 22880/cold boot), `timerCounterError` = +1 to +6.** Coarse trim is positive ✓ (trying to push DAC up), but overwhelmed by I-term.
+- **P-term analysis:** `ticDelta` during sawtooth ramp ≈ +100–200, `pTerm = +1200–2000` (clamped). P-term is positive (pushing DAC up) ✓, contributing mean +1714 DAC counts per cycle. But iAccumulator still drifts DOWN due to I-term. Mean DAC seen by OCXO ≈ iAccumulator + 1714 ≈ 22000–24000 — too low for the cold OCXO. Loop diverges.
+- **Fix applied:** `ticOffset` changed from **500.0 → 400.0** in `Constants.h`.
+  - With `ticOffset = 400`, `ticValueCorrectionOffset = linearize(400) = 400 − 12 = 388`.
+  - Mean `ticCorrectedNetValue` during sawtooth = (406−12) − 388 = **+6 ≈ 0** — bias eliminated.
+  - I-term is now unbiased during sawtooth pull-in; coarse trim and true phase error drive the loop correctly.
+  - At lock, equilibrium TIC = 400 (instead of 500). Both are valid phase offsets; the loop self-centres on ticOffset regardless.
+  - The earlier `ticOffset = 500.0` assumption was documented as "midpoint of TIC range [TIC_MIN, TIC_MAX]" but TIC_MAX=1012 is the ADC clip limit, not the hardware sawtooth top. Actual hardware sawtooth top ≈ 780–815.
 
 ---
 

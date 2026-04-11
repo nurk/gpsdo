@@ -110,15 +110,34 @@ struct ControlState {
     bool ppsLocked       = false;
     int32_t ppsLockCount = 0; // consecutive seconds within LOCK_THRESHOLD; lock declared at 2 × ticFilterConst
 
-    double ticOffset = 500.0; // expected centre of TIC range (counts)
+    double ticOffset = 400.0; // expected centre of TIC range (counts)
+                              // Set to the midpoint of the actual hardware TIC sawtooth range.
+                              // With C0G cap and 1N4148W diode, the sawtooth spans ~TIC_MIN (12)
+                              // to ~780–815 hardware counts, giving a midpoint of ~395–413.
+                              // Using 400 centres the sawtooth mean at zero so the I-term is
+                              // unbiased during pull-in (no systematic push in the wrong direction
+                              // when the OCXO must move upward from a cold-start seed).
+                              // At lock the TIC settles to this value as the equilibrium phase offset.
     // Polynomial coefficients for TIC linearization.
     // The polynomial is evaluated on a normalised input x = (tic - TIC_MIN) / (TIC_MAX - TIC_MIN) * 1000
     // using Horner form:  x*(a1 + x*(a2 + x*a3))
-    // x1 is derived: x1 = 1 - x2 - x3  (ensures unity gain at full scale)
+    // x1 is derived: x1 = 1 - x2*1000 - x3*100000  (ensures unity gain at full scale)
     // x2 and x3 are the quadratic and cubic correction terms.
     // Pre-scale x2 by 1/1000 and x3 by 1/100000 when storing so no runtime division is needed.
-    double x2Coefficient = 1.0e-4; // quadratic term  (= 0.1 / 1000)
-    double x3Coefficient = 3.0e-7; // cubic term      (= 0.03 / 100000)
+    //
+    // C9 = C0G/NP0 1 nF (fitted 2026-04-10):
+    //   With a C0G capacitor, voltage coefficient is near-zero so the polynomial
+    //   correction is minimal. utils/fit_tic_poly.py on run1 log found that the
+    //   current coefficients exactly reproduce the logged correction (RMS=0.003) —
+    //   but the step-variance metric cannot distinguish options when the sawtooth
+    //   is only 2–3 ticks long (200 ppb OCXO offset at boot).
+    //   The X7R run3 analysis showed "no correction" (x2=0, x3=0) had better
+    //   step-linearity (9.2) than the current polynomial (24.0), suggesting the
+    //   original coefficients were fitted for a different capacitor/temperature.
+    //   Set to zero for the C0G; re-fit from a slow-ramp log once the loop is
+    //   locked and the OCXO is near on-frequency (run fit_tic_poly.py again).
+    double x2Coefficient = 0.0; // quadratic term — zeroed for C0G cap (was 1.0e-4 for X7R)
+    double x3Coefficient = 0.0; // cubic term    — zeroed for C0G cap (was 3.0e-7 for X7R)
 };
 
 struct EEPROMState {
@@ -145,21 +164,28 @@ constexpr double TIC_MAX = 1012.0;
 // Lock detection thresholds (in linearised TIC counts, same units as ticCorrectedNetValueFiltered)
 // Lock is declared after 2 × ticFilterConst consecutive seconds below LOCK_THRESHOLD.
 // Unlock occurs immediately when the filtered error exceeds UNLOCK_THRESHOLD (hysteresis).
-constexpr double LOCK_THRESHOLD   = 50.0; // filtered phase error must stay within ±50 counts to declare lock
-constexpr double UNLOCK_THRESHOLD = 100.0; // filtered phase error must exceed ±100 counts to declare unlock
+constexpr double LOCK_THRESHOLD   = 80.0;  // filtered phase error must stay within 80 counts to declare lock
+constexpr double UNLOCK_THRESHOLD = 200.0; // filtered phase error must exceed 200 counts to declare unlock
 
 
-// Maximum P-term contribution in DAC counts per tick.
-// The raw TIC sawtooth spans ~500 counts/s × gain 12 = ~6000 counts, which would
-// slam the DAC on every wrap. Clamping limits the kick while still providing
-// meaningful frequency-error damping.
-// Maximum P-term contribution in DAC counts per tick.
-// With ticDelta as the P-term source (rate of change of linearised phase error):
-//   - Sawtooth ramp at ~170 counts/s drift × gain 12 = ~2040 counts  → real signal, should pass
-//   - Sawtooth wrap spike at ~500–800 counts  × gain 12 = ~6000–9600 → should be clamped
-// A clamp of 2000 passes the ramp signal almost fully and caps wrap spikes cleanly.
-// (When ticFrequencyError was the source, the coarseFreqError term inflated every tick
-//  by ±200×timerCounterError, making 2000 fire constantly. With ticDelta that problem is gone.)
+// TIC wrap detection threshold (linearised counts).
+// A TIC sawtooth wrap produces |ticDelta| ≈ TIC_LINEARISED_RANGE (0–1000 counts),
+// jumping from near-max to near-min or vice versa in one tick.
+// A real ramp gradient is at most ~200 counts/tick (≈200 ppb drift).
+// Any |ticDelta| above this threshold is unambiguously a wrap event, not a real
+// frequency signal, and the P-term must be zeroed for that tick.
+// Chosen conservatively below the minimum possible wrap magnitude (~488 counts
+// for a wrap from just above TIC_MIN back to just above zero) and well above the
+// maximum real ramp step (~200 counts/tick at 200 ppb drift).
+constexpr double TIC_WRAP_THRESHOLD = 400.0;
+
+// Maximum P-term contribution in DAC counts per tick (applied after wrap suppression).
+// On non-wrap ticks, ticDelta is the ramp slope (real frequency signal).
+// The clamp is a safety net for large-but-not-wrap excursions (e.g. GPS jitter spikes).
+// With ticDelta as the P-term source:
+//   - Ramp slope at ~170 counts/s × gain 12 = ~2040 counts → real signal
+//   - GPS jitter spike of ±5 counts → ±60 counts → well within clamp
+// 2000 is the right ceiling; wrap events are now suppressed before reaching here.
 constexpr double PTERM_MAX_COUNTS = 2000.0;
 
 // Maximum plausible timerCounterError magnitude for coarse accumulator input.

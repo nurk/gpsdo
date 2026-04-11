@@ -185,17 +185,26 @@ void CalculationController::piLoop(const OpMode mode) {
     }
 
     // --- P-term ---
-    // Proportional to the rate of change of the fine TIC phase error (ticDelta),
-    // NOT ticFrequencyError. ticFrequencyError includes the coarse counter term
-    // (timerCounterError × 200 ns), which fires at ±200 ns on every GPS PPS jitter
-    // tick of ±1 count. At gain=12 that produces ±2400 DAC counts — hitting the
-    // clamp on almost every tick and masking the real signal.
-    // ticDelta alone is the true rate of change of the linearised phase error and
-    // is the correct signal to damp.
-    // Clamp to ±PTERM_MAX_COUNTS so sawtooth wrap spikes don't overwhelm the I-term.
-    double pTerm = state_.ticDelta * state_.gain;
-    if (pTerm > PTERM_MAX_COUNTS) pTerm = PTERM_MAX_COUNTS;
-    if (pTerm < -PTERM_MAX_COUNTS) pTerm = -PTERM_MAX_COUNTS;
+    // Proportional to the rate of change of the fine TIC phase error (ticDelta).
+    //
+    // TIC wrap suppression: when the TIC sawtooth wraps (PPS edge crosses an OCXO
+    // cycle boundary), ticDelta jumps by ~700–800 counts in the wrong direction —
+    // a large negative spike when the OCXO is slow (wrap from high back to low) and
+    // a large positive spike when fast (wrap from low back to high).  Both are the
+    // opposite of what the P-term should do for the prevailing frequency error, so
+    // they would kick the DAC the wrong way for one tick.
+    // Detect wraps by |ticDelta| > TIC_WRAP_THRESHOLD and zero the P-term entirely
+    // for that tick.  The I-term continues uninterrupted; the missing P-term for one
+    // tick is inconsequential.
+    //
+    // On non-wrap ticks, clamp to ±PTERM_MAX_COUNTS as a safety net.
+    double pTerm = 0.0;
+    if (fabs(state_.ticDelta) <= TIC_WRAP_THRESHOLD) {
+        pTerm = state_.ticDelta * state_.gain;
+        if (pTerm > PTERM_MAX_COUNTS) pTerm = PTERM_MAX_COUNTS;
+        if (pTerm < -PTERM_MAX_COUNTS) pTerm = -PTERM_MAX_COUNTS;
+    }
+    // pTerm stays 0.0 on wrap ticks.
     state_.pTerm = pTerm;
 
     // --- I-term (one step) ---
@@ -212,34 +221,69 @@ void CalculationController::piLoop(const OpMode mode) {
         // carry that would produce a large burst when suppression ends.
         state_.iRemainder = 0.0;
     } else {
-        const double iStep = (state_.ticCorrectedNetValueFiltered * state_.gain
+        // --- Overshoot guard (conditional integration) ---
+        // During a long pull-in the EMA filter builds up sustained history in one
+        // direction.  After the OCXO crosses the true on-frequency EFC setpoint the
+        // raw phase (ticCorrectedNetValue) changes sign every ~8 ticks as the TIC
+        // sawtooth oscillates — that is normal behaviour, NOT an overshoot signal.
+        // Using a single raw-vs-filtered sign comparison incorrectly freezes the
+        // integrator on every ramp half-cycle (proven broken in run3 of 2026-04-10).
+        //
+        // The correct overshoot indicator uses TWO consecutive raw samples:
+        //   If both the current AND the previous raw phase value are on the opposite
+        //   side of zero from the filtered value, the loop has genuinely crossed and
+        //   held the setpoint for at least 2 ticks — not just a momentary sawtooth
+        //   crossing.  Freeze the integrator until raw and filtered agree again.
+        //
+        // A TIC sawtooth half-cycle at 200 ppb drift lasts ~4 ticks (ramp from 0 to
+        // 488 counts at 100 counts/tick).  Two consecutive ticks on the wrong side
+        // will occasionally catch a sawtooth crossing, but this is a harmless 1-tick
+        // freeze compared to the many seconds of overshoot it prevents.
+        //
+        // During normal locked operation |filtered| < 50 counts and the raw signal
+        // oscillates around zero with it, so this guard virtually never fires.
+        const double prevNetValue   = state_.ticValueCorrectionOld - state_.ticValueCorrectionOffset;
+        const bool filteredNeg      = state_.ticCorrectedNetValueFiltered < 0.0;
+        const bool filteredPos      = state_.ticCorrectedNetValueFiltered > 0.0;
+        const bool currRawOppFilter = (filteredNeg && state_.ticCorrectedNetValue > 0.0) ||
+                                      (filteredPos && state_.ticCorrectedNetValue < 0.0);
+        const bool prevRawOppFilter = (filteredNeg && prevNetValue > 0.0) ||
+                                      (filteredPos && prevNetValue < 0.0);
+        const bool overshootDetected = currRawOppFilter && prevRawOppFilter;
+
+        const double iStep      = (state_.ticCorrectedNetValueFiltered * state_.gain
                 / static_cast<double>(state_.damping)
                 / static_cast<double>(state_.timeConst))
             + state_.iRemainder;
-
         const double iStepFloor = floor(iStep);
 
-        // --- Anti-windup: do not apply an I-step that pushes deeper into a rail ---
-        const bool atMin             = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
-        const bool atMax             = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
-        const bool stepDrivesIntoMin = iStepFloor < 0.0;
-        const bool stepDrivesIntoMax = iStepFloor > 0.0;
-
-        if ((atMin && stepDrivesIntoMin) || (atMax && stepDrivesIntoMax)) {
-            // Step would push further into the rail — discard it.
+        if (overshootDetected) {
+            // Both consecutive raw samples are opposite to the filter — genuine
+            // setpoint crossing.  Freeze integrator; drain remainder.
             state_.iRemainder = 0.0;
         } else {
-            state_.iRemainder   = iStep - iStepFloor;
-            state_.iAccumulator += iStepFloor;
+            // --- Anti-windup: do not apply an I-step that pushes deeper into a rail ---
+            const bool atMin             = state_.iAccumulator <= static_cast<double>(state_.dacMinValue);
+            const bool atMax             = state_.iAccumulator >= static_cast<double>(state_.dacMaxValue);
+            const bool stepDrivesIntoMin = iStepFloor < 0.0;
+            const bool stepDrivesIntoMax = iStepFloor > 0.0;
 
-            // --- Clamp accumulator to DAC range ---
-            if (state_.iAccumulator < static_cast<double>(state_.dacMinValue)) {
-                state_.iAccumulator = static_cast<double>(state_.dacMinValue);
-                state_.iRemainder   = 0.0;
-            }
-            if (state_.iAccumulator > static_cast<double>(state_.dacMaxValue)) {
-                state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
-                state_.iRemainder   = 0.0;
+            if ((atMin && stepDrivesIntoMin) || (atMax && stepDrivesIntoMax)) {
+                // Step would push further into the rail — discard it.
+                state_.iRemainder = 0.0;
+            } else {
+                state_.iRemainder   = iStep - iStepFloor;
+                state_.iAccumulator += iStepFloor;
+
+                // --- Clamp accumulator to DAC range ---
+                if (state_.iAccumulator < static_cast<double>(state_.dacMinValue)) {
+                    state_.iAccumulator = static_cast<double>(state_.dacMinValue);
+                    state_.iRemainder   = 0.0;
+                }
+                if (state_.iAccumulator > static_cast<double>(state_.dacMaxValue)) {
+                    state_.iAccumulator = static_cast<double>(state_.dacMaxValue);
+                    state_.iRemainder   = 0.0;
+                }
             }
         }
     }
@@ -333,23 +377,21 @@ void CalculationController::lockDetection(const OpMode mode) {
         }
     } else {
         // Not yet locked — the filtered phase error must stay within ±LOCK_THRESHOLD
-        // for 2 × ticFilterConst consecutive seconds to declare lock.
+        // for ticFilterConst consecutive seconds to declare lock.
         //
-        // The original iDrift guard (|iAccumulator - iAccumulatorLast| < LOCK_INTEGRATOR_DRIFT_MAX)
-        // was intended to block premature lock while the integrator is still pulling in.
-        // However once the integrator has converged, the I-step still oscillates ±(filtered*0.125)
-        // each tick, tracking the TIC sawtooth — so iDrift routinely exceeds the threshold even
-        // when the mean drift is near zero. This permanently blocks lock declaration.
-        // The EMA filter staying within ±LOCK_THRESHOLD for 2×ticFilterConst seconds already
-        // provides sufficient confidence that the loop has settled. No separate drift guard needed.
+        // Rationale for ticFilterConst (not 2×):
+        // With a persistent TIC sawtooth (period ~42 ticks, filterConst=16), the filtered
+        // value stays below LOCK_THRESHOLD for only ~25 ticks per cycle (the trough).
+        // Requiring 2×ticFilterConst (32 consecutive) is structurally impossible — the next
+        // sawtooth peak always arrives within 31 ticks and resets the counter.
+        // ticFilterConst (16) consecutive ticks is achievable in every trough once converged
+        // and spans exactly one full EMA time constant — sufficient evidence of settlement.
         const bool phaseOk = absFiltered < LOCK_THRESHOLD;
 
         if (phaseOk) {
             state_.ppsLockCount++;
 
-            // Require 2 × ticFilterConst consecutive seconds before declaring lock.
-            // This ensures the EMA has fully settled before we call it locked.
-            if (state_.ppsLockCount >= state_.ticFilterConst * 2) {
+            if (state_.ppsLockCount >= state_.ticFilterConst) {
                 state_.ppsLocked = true;
             }
         } else {
